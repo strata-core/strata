@@ -54,7 +54,7 @@ See [`docs/IN_PROGRESS.md`](docs/IN_PROGRESS.md) for details.
 
 ```bash
 # Clone and build
-git clone https://github.com/YOUR_USERNAME/strata.git
+git clone https://github.com/strata-core/strata.git
 cd strata
 cargo build --workspace
 
