@@ -17,6 +17,8 @@ use strata_ast::span::Span;
 pub enum InferError {
     /// Reference to an unknown variable
     UnknownVariable { name: String, span: Span },
+    /// Feature not yet implemented
+    NotImplemented { msg: String, span: Span },
 }
 
 /// Inference context for constraint generation
@@ -130,6 +132,20 @@ impl InferCtx {
 
                 Ok(result_ty)
             }
+
+            // Phase 3 will implement type inference for these
+            Expr::Block(block) => Err(InferError::NotImplemented {
+                msg: "Block type inference".to_string(),
+                span: block.span,
+            }),
+            Expr::If { span, .. } => Err(InferError::NotImplemented {
+                msg: "If type inference".to_string(),
+                span: *span,
+            }),
+            Expr::While { span, .. } => Err(InferError::NotImplemented {
+                msg: "While type inference".to_string(),
+                span: *span,
+            }),
         }
     }
 

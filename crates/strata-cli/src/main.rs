@@ -208,5 +208,10 @@ fn eval_expr(e: &Expr) -> Result<Value> {
         Expr::Var(id) => bail!("unknown variable `{}` (no env yet)", id.text),
         Expr::Call { .. } => bail!("calls not supported in tiny evaluator yet"),
         Expr::Paren { inner, .. } => eval_expr(inner),
+
+        // Phase 4 will implement evaluation for these
+        Expr::Block(_) => bail!("block evaluation not implemented yet (Issue 006 Phase 4)"),
+        Expr::If { .. } => bail!("if evaluation not implemented yet (Issue 006 Phase 4)"),
+        Expr::While { .. } => bail!("while evaluation not implemented yet (Issue 006 Phase 4)"),
     }
 }

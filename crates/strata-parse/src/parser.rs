@@ -1,7 +1,9 @@
 use crate::lexer::Lexer;
 use crate::token::{Tok, TokKind};
 use anyhow::{bail, Result};
-use strata_ast::ast::*;
+use strata_ast::ast::{
+    BinOp, Block, Expr, FnDecl, Ident, Item, LetDecl, Lit, Module, Param, TypeExpr, UnOp,
+};
 use strata_ast::span::Span;
 
 pub fn parse_str(_file: &str, src: &str) -> Result<Module> {
@@ -124,9 +126,21 @@ impl<'a> Parser<'a> {
         };
 
         // Parse body: { expr }
+        let body_start = self.cur.span.start;
         self.expect(TokKind::LBrace)?;
-        let body = self.parse_expr_bp(0)?;
+        let body_expr = self.parse_expr_bp(0)?;
+        let body_end = self.cur.span.end;
         self.expect(TokKind::RBrace)?;
+
+        // Wrap single expression in a Block (temporary until Phase 2 implements block parsing)
+        let body = Block {
+            stmts: vec![],
+            tail: Some(Box::new(body_expr)),
+            span: Span {
+                start: body_start,
+                end: body_end,
+            },
+        };
 
         Ok(FnDecl {
             name,
@@ -411,6 +425,9 @@ fn node_start(e: &Expr) -> u32 {
         Expr::Call { span, .. } => span.start,
         Expr::Binary { span, .. } => span.start,
         Expr::Paren { span, .. } => span.start,
+        Expr::Block(block) => block.span.start,
+        Expr::If { span, .. } => span.start,
+        Expr::While { span, .. } => span.start,
     }
 }
 
@@ -422,5 +439,8 @@ fn node_end(e: &Expr) -> u32 {
         Expr::Call { span, .. } => span.end,
         Expr::Binary { span, .. } => span.end,
         Expr::Paren { span, .. } => span.end,
+        Expr::Block(block) => block.span.end,
+        Expr::If { span, .. } => span.end,
+        Expr::While { span, .. } => span.end,
     }
 }

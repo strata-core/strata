@@ -29,7 +29,7 @@ pub mod ast {
         pub name: Ident,
         pub params: Vec<Param>,
         pub ret_ty: Option<TypeExpr>,
-        pub body: Expr, // Single expression for now (blocks in Issue 006)
+        pub body: Block,
         pub span: Span,
     }
 
@@ -65,6 +65,39 @@ pub mod ast {
         },
     }
 
+    /// Statement within a block
+    #[derive(Debug, Clone, Serialize)]
+    pub enum Stmt {
+        /// Local variable binding: `let x = e;` or `let mut x: T = e;`
+        Let {
+            mutable: bool,
+            name: Ident,
+            ty: Option<TypeExpr>,
+            value: Expr,
+            span: Span,
+        },
+        /// Assignment: `x = e;`
+        Assign {
+            target: Ident,
+            value: Expr,
+            span: Span,
+        },
+        /// Expression statement: `e;`
+        Expr { expr: Expr, span: Span },
+        /// Return statement: `return e;` or `return;`
+        Return { value: Option<Expr>, span: Span },
+    }
+
+    /// Block expression: `{ stmt; stmt; expr }`
+    #[derive(Debug, Clone, Serialize)]
+    pub struct Block {
+        /// Statements in the block (with trailing semicolons)
+        pub stmts: Vec<Stmt>,
+        /// Optional tail expression (no trailing semicolon) - the block's value
+        pub tail: Option<Box<Expr>>,
+        pub span: Span,
+    }
+
     #[derive(Debug, Clone, Serialize)]
     pub enum Expr {
         Lit(Lit, Span),
@@ -87,6 +120,21 @@ pub mod ast {
         },
         Paren {
             inner: Box<Expr>,
+            span: Span,
+        },
+        /// Block expression: `{ stmt; stmt; expr }`
+        Block(Block),
+        /// If expression: `if cond { ... } else { ... }`
+        If {
+            cond: Box<Expr>,
+            then_: Block,
+            else_: Option<Box<Expr>>,
+            span: Span,
+        },
+        /// While loop: `while cond { ... }`
+        While {
+            cond: Box<Expr>,
+            body: Block,
             span: Span,
         },
     }

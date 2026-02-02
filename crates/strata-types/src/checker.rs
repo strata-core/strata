@@ -108,14 +108,10 @@ impl TypeChecker {
     /// Type check a let declaration
     fn check_let(&mut self, decl: &LetDecl) -> Result<(), TypeError> {
         // Infer the type of the value expression
-        let inferred_ty =
-            self.infer_ctx
-                .infer_expr(&self.env, &decl.value)
-                .map_err(|e| match e {
-                    super::infer::constraint::InferError::UnknownVariable { name, span } => {
-                        TypeError::UnknownVariable { name, span }
-                    }
-                })?;
+        let inferred_ty = self
+            .infer_ctx
+            .infer_expr(&self.env, &decl.value)
+            .map_err(infer_error_to_type_error)?;
 
         // If there's a type annotation, add constraint
         if let Some(ann_ty) = &decl.ty {
@@ -179,15 +175,16 @@ impl TypeChecker {
             fn_env.insert(param.name.text.clone(), Scheme::mono(param_ty.clone()));
         }
 
-        // Infer body type
-        let body_ty = self
-            .infer_ctx
-            .infer_expr(&fn_env, &decl.body)
-            .map_err(|e| match e {
-                super::infer::constraint::InferError::UnknownVariable { name, span } => {
-                    TypeError::UnknownVariable { name, span }
-                }
-            })?;
+        // Infer body type from the Block's tail expression
+        // (Full block inference will be implemented in Phase 3)
+        let body_ty = if let Some(ref tail_expr) = decl.body.tail {
+            self.infer_ctx
+                .infer_expr(&fn_env, tail_expr)
+                .map_err(infer_error_to_type_error)?
+        } else {
+            // Empty block or no tail expression returns Unit
+            Ty::unit()
+        };
 
         // Constrain body type to match return type
         self.infer_ctx
@@ -263,6 +260,18 @@ fn ty_from_type_expr(te: &TypeExpr) -> Result<Ty, TypeError> {
             let param_tys = param_tys?;
             let ret_ty = ty_from_type_expr(ret)?;
             Ok(Ty::arrow(param_tys, ret_ty))
+        }
+    }
+}
+
+/// Convert InferError to TypeError
+fn infer_error_to_type_error(err: super::infer::constraint::InferError) -> TypeError {
+    match err {
+        super::infer::constraint::InferError::UnknownVariable { name, span } => {
+            TypeError::UnknownVariable { name, span }
+        }
+        super::infer::constraint::InferError::NotImplemented { msg, span } => {
+            TypeError::NotImplemented { msg, span }
         }
     }
 }
