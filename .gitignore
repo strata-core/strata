@@ -20,8 +20,9 @@
 ehthumbs.db
 Thumbs.db
 
-# Archive directories
+# Docs
 docs/archive/
+docs/lessons-learned.md
 
 # Build artifacts
 *.so
@@ -39,3 +40,5 @@ docs/archive/
 scratch/
 tmp/
 cargo-test-workspace-output.txt
+strata*.tar.gz
+claude.md
