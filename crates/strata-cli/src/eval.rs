@@ -536,22 +536,29 @@ fn eval_call(env: &mut Env, callee: &Expr, args: &[Expr]) -> Result<ControlFlow>
 
     let (params, body, mut closure_env) = closure;
 
-    // For recursion support: if the callee was a variable, ensure it's available
-    // in the closure's environment. This handles the case where a function
-    // refers to itself but captured its env before being fully defined.
-    if let Expr::Var(id) = callee {
-        if let Some(func_val) = env.get(&id.text) {
-            // Check if closure_env has Unit (placeholder) for this name
-            let needs_update = matches!(closure_env.get(&id.text), Some(Value::Unit) | None);
-            if needs_update {
-                if let Some(scope) = closure_env.scopes.first_mut() {
-                    scope.insert(
-                        id.text.clone(),
-                        Binding {
-                            value: func_val.clone(),
-                            mutable: false,
-                        },
-                    );
+    // For recursion and mutual recursion support: patch the closure's captured
+    // environment with any closures from the calling environment that are
+    // placeholders (Unit) or outdated versions in the captured env.
+    // This handles self-recursion, forward references, and mutual recursion.
+    if let Some(calling_scope) = env.scopes.first() {
+        if let Some(closure_scope) = closure_env.scopes.first_mut() {
+            for (name, binding) in calling_scope {
+                // Only patch if it's a closure in the calling env
+                if matches!(binding.value, Value::Closure { .. }) {
+                    // Check if closure_env has Unit (placeholder) or a different closure
+                    let needs_update = match closure_scope.get(name) {
+                        Some(b) => matches!(b.value, Value::Unit),
+                        None => true,
+                    };
+                    if needs_update {
+                        closure_scope.insert(
+                            name.clone(),
+                            Binding {
+                                value: binding.value.clone(),
+                                mutable: false,
+                            },
+                        );
+                    }
                 }
             }
         }
