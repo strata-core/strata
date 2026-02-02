@@ -6,7 +6,16 @@
 - **Types**:
   - Local `let` → inference by default.
   - `pub` items (fn/actor/trait) → explicit **types and effect rows**.
-  - Capability params explicit: `using fs: FsCap`. Using cap: CapType for capability params; layer {} sugar permitted—but desugars to functions.
+  - Capability params explicit: `using fs: FsCap` for fine-grained, or `using cap: RoleName` for bundles.
+  - Using cap: CapType for capability params; layer {} sugar permitted—but desugars to functions.
+- **Capability Bundles** (v0.2+):
+  - Define reusable roles: `capability IncidentResponder = {GitHub.Read, Slack.Write, K8s.Logs}`
+  - Hierarchical sub-roles: `capability IncidentResponder.Scribe = {GitHub.Comment, Slack.Write}`
+  - Use CLI to inspect: `strata describe role IncidentResponder`
+  - Prefer semantic names over permission lists
+- **Functions**:
+  - Multi-parameter syntax: `fn add(x: Int, y: Int) -> Int` (not curried)
+  - Partial application explicit with lambdas when needed
 - **Pattern matching**: prefer `match` with exhaustiveness; guards allowed.
 - **Profiles**: declare at package/module; compiler enforces constraints.
 - **Errors**: use `Result<E, A>` or `&{ Fail[E] }`; `?` for propagation.

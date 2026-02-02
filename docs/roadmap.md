@@ -34,6 +34,7 @@ This document describes the planned roadmap for Strata, organized by development
 **Killer Demos:** See [`KILLER_DEMOS.md`](KILLER_DEMOS.md)
 1. Safe model deployment script
 2. AI-powered incident response workflow
+3. Multi-LLM software orchestrator (meta-demo: building agents with Strata)
 
 **v0.1 Success Metric:** An automation engineer can write a production deployment script in Strata that is safer, more auditable, and easier to debug than Python/Bash equivalents.
 
@@ -42,9 +43,29 @@ This document describes the planned roadmap for Strata, organized by development
 ## Important Notes
 
 ### Timeline Reconciliation
-External feedback suggests Phase 2-3 (type system + effects) is achievable in 3-6 months. Our 10-14 month timeline includes Phase 4-5 (runtime, stdlib, tooling, docs, killer demos) which represents the additional effort to ship a production-ready v0.1.
 
-**Update (Feb 2026):** Phase 2 is tracking ahead of schedule. Issue 005 completed. On track for Phase 2 completion by early April 2026.
+**Actual velocity data (as of Feb 2026):**
+- v0.0.1 to v0.0.5: ~2 months of focused work (Dec-Jan break excluded)
+- Shipped: Complete lexer/parser, type inference, function system, soundness hardening
+- Velocity: ~2.5 issues per month when focused
+
+**Projected timeline with Claude Code acceleration:**
+```
+Actual work time to v0.0.5: ~2 months
+├─ Phase 2 remaining (006-007): +2 months → Month 4 (Apr 2026)
+├─ Phase 3 (008-010): +2-3 months → Month 6-7 (Jul 2026)
+├─ Phase 4 (Runtime + stdlib): +2-3 months → Month 9-10 (Oct 2026)
+└─ Phase 5 (Hardening + launch): +2-3 months → Month 12 (Dec 2026)
+
+RESULT: v0.1 launch feasible by December 2026 - February 2027
+```
+
+**Update (Feb 2026):** Phase 2 is tracking ahead of schedule. Issue 005 + 005-b completed in ~3 weeks of work. On track for Phase 2 completion by early April 2026.
+
+**Confidence level for 12-15 month timeline:** Very high
+- Demonstrated velocity supports estimate
+- Claude Code will accelerate implementation grind
+- Foundation is sound (post-005-b hardening)
 
 ### Standard Library Phasing
 - **Issues 005-007:** Pure functions only (no I/O)

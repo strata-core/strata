@@ -354,6 +354,325 @@ fn incident_response_workflow(
 
 ---
 
+---
+
+## Demo 3: Multi-LLM Software Orchestrator (The Meta Demo)
+
+**Use Case:** Build software projects using multiple AI models (Claude, ChatGPT, Grok) with capability-constrained roles
+
+**Target Pain Points:**
+- AI agents going rogue and doing things outside their role
+- No visibility into which agent made which decision
+- Hard to debug multi-agent failures
+- Cost tracking across multiple LLM providers
+- Safety concerns about agents with too much power
+
+**Why This Demo Is Special:**
+This is the "dogfooding" demo - using Strata to build the exact type of multi-agent system that Strata was designed for. It's meta-compelling: "We built an agent orchestrator IN the agent orchestration language."
+
+### Code Example
+
+```strata
+// Define specialized agent roles with capability constraints
+capability Architect = {
+  FileSystem: {Read, Write.Designs},
+  Claude: {API},
+  Repo: {Read, Comment}
+}
+
+capability Developer = {
+  FileSystem: {Read, Write.Code},
+  ChatGPT: {API},
+  Repo: {Read, Write, Commit},
+  GitHub: {PullRequest}
+}
+
+capability Reviewer = {
+  FileSystem: {Read},
+  Grok: {API},
+  Repo: {Read, Comment, Approve}
+}
+
+// Multi-LLM orchestration with capability security
+fn build_feature(
+  spec: FeatureSpec,
+  using cap: {Claude.API, ChatGPT.API, Grok.API, GitHub, FileSystem}
+) & {Net, FS, GitHub, AI, Log} -> Result<PullRequest, Error> {
+  
+  log("=== Starting Feature Build: {} ===", spec.title, using time);
+  
+  // Phase 1: Design (Claude - read-only on code, can write designs)
+  log("Phase 1: Architecture design (Claude)", using time);
+  let design = spawn_agent::<Architect>(
+    caps: Architect,
+    model: "claude-sonnet-4",
+    prompt: "Design architecture for: {}
+Requirements: {}
+Constraints: {}",
+    context: spec
+  ).await?;
+  
+  log("Design complete: {} components, {} interfaces", 
+      len(design.components), len(design.interfaces), using time);
+  
+  // Phase 2: Implement (ChatGPT - can write code, commit)
+  log("Phase 2: Implementation (ChatGPT)", using time);
+  let implementation = spawn_agent::<Developer>(
+    caps: Developer,
+    model: "gpt-4",
+    prompt: "Implement based on design: {}
+Test coverage: 80%+ required
+Follow project style guide",
+    context: design
+  ).await?;
+  
+  log("Implementation complete: {} files changed, {} tests added",
+      len(implementation.changed_files), implementation.tests_added, using time);
+  
+  // Phase 3: Review (Grok - read-only, can comment)
+  log("Phase 3: Code review (Grok)", using time);
+  let review = spawn_agent::<Reviewer>(
+    caps: Reviewer,
+    model: "grok-2",
+    prompt: "Review implementation for:
+- Security issues
+- Performance problems
+- Test coverage
+- Code style violations",
+    context: implementation
+  ).await?;
+  
+  log("Review complete: {} issues found, severity: {}",
+      len(review.issues), review.max_severity, using time);
+  
+  // Phase 4: Create PR with all context
+  if review.max_severity == "blocker" {
+    return Err(Error::ReviewBlocked(review.issues));
+  }
+  
+  let pr = create_pull_request(
+    title: spec.title,
+    design: design,
+    implementation: implementation,
+    review: review,
+    using github
+  )?;
+  
+  log("Pull request created: {}", pr.url, using time);
+  Ok(pr)
+}
+```
+
+### Effect Trace Output
+
+```json
+{
+  "workflow": "build_feature",
+  "feature": "Add authentication middleware",
+  "start_time": "2026-02-01T10:00:00Z",
+  "phases": [
+    {
+      "phase": "Architecture",
+      "agent": "Architect",
+      "model": "claude-sonnet-4",
+      "timestamp": "2026-02-01T10:00:01Z",
+      "effects": [
+        {
+          "effect": "FS.Read",
+          "paths": ["/src/auth/", "/docs/architecture.md"],
+          "bytes_read": 15420
+        },
+        {
+          "effect": "AI.Generate",
+          "model": "claude-sonnet-4",
+          "prompt_tokens": 3200,
+          "completion_tokens": 1850,
+          "cost_usd": 0.03,
+          "reasoning_trace": {
+            "approach": "Middleware pattern with JWT validation",
+            "components": ["AuthMiddleware", "TokenValidator", "UserContext"],
+            "justification": "Separates auth logic from business logic, testable in isolation"
+          }
+        },
+        {
+          "effect": "FS.Write",
+          "path": "/designs/auth-middleware.md",
+          "bytes": 4096
+        }
+      ],
+      "duration_ms": 8500,
+      "result": "Success"
+    },
+    {
+      "phase": "Implementation",
+      "agent": "Developer",
+      "model": "gpt-4",
+      "timestamp": "2026-02-01T10:00:10Z",
+      "effects": [
+        {
+          "effect": "FS.Read",
+          "paths": ["/designs/auth-middleware.md", "/src/**/*.rs"],
+          "bytes_read": 52000
+        },
+        {
+          "effect": "AI.Generate",
+          "model": "gpt-4",
+          "prompt_tokens": 8500,
+          "completion_tokens": 3200,
+          "cost_usd": 0.08,
+          "generated_files": [
+            "/src/auth/middleware.rs",
+            "/src/auth/validator.rs",
+            "/tests/auth_tests.rs"
+          ]
+        },
+        {
+          "effect": "FS.Write",
+          "files": 3,
+          "total_bytes": 12800
+        },
+        {
+          "effect": "Repo.Commit",
+          "sha": "abc123",
+          "message": "Add authentication middleware per design",
+          "files_changed": 3
+        }
+      ],
+      "duration_ms": 22000,
+      "result": "Success"
+    },
+    {
+      "phase": "Review",
+      "agent": "Reviewer",
+      "model": "grok-2",
+      "timestamp": "2026-02-01T10:00:35Z",
+      "effects": [
+        {
+          "effect": "FS.Read",
+          "paths": ["/src/auth/**/*.rs", "/tests/auth_tests.rs"],
+          "bytes_read": 12800
+        },
+        {
+          "effect": "AI.Analyze",
+          "model": "grok-2",
+          "prompt_tokens": 4200,
+          "completion_tokens": 900,
+          "cost_usd": 0.02,
+          "findings": {
+            "security_issues": 0,
+            "performance_concerns": 1,
+            "style_violations": 2,
+            "test_coverage": "87%"
+          }
+        },
+        {
+          "effect": "Repo.Comment",
+          "location": "/src/auth/middleware.rs:42",
+          "text": "Consider caching token validation results for performance"
+        }
+      ],
+      "duration_ms": 12000,
+      "result": "Approved with suggestions"
+    },
+    {
+      "phase": "PR Creation",
+      "timestamp": "2026-02-01T10:00:50Z",
+      "effects": [
+        {
+          "effect": "GitHub.PullRequest",
+          "number": 42,
+          "url": "https://github.com/company/project/pull/42"
+        }
+      ],
+      "duration_ms": 1500
+    }
+  ],
+  "total_duration_ms": 44000,
+  "total_cost_usd": 0.13,
+  "result": "Success(PR #42)"
+}
+```
+
+### Demo Narrative
+
+**Setup:**
+1. Explain the problem: "AI agents are powerful but opaque and potentially dangerous"
+2. Show traditional approach: Python scripts calling LLM APIs with no safety rails
+3. Demonstrate the risks: What if architect agent tries to commit code? What if developer agent tries to approve its own work?
+
+**Strata Solution:**
+1. Define three agent roles with explicit, minimal capabilities
+2. Show capability constraints in code:
+   - Architect CAN'T commit code (compile error if it tries)
+   - Developer CAN'T approve PRs (compile error if it tries)
+   - Reviewer CAN'T modify code (compile error if it tries)
+3. Run the workflow end-to-end
+4. Show the complete effect trace with:
+   - Every AI decision with reasoning
+   - Every file operation
+   - Cost tracking across all models
+   - Time breakdown per phase
+
+**Wow Moments:**
+
+1. **"The compiler prevents agent security violations"**
+   - Try to make Architect commit code → Compile error
+   - "This is type-safety for AI agents"
+
+2. **"You can see exactly what each agent did and why"**
+   - Show effect trace with reasoning traces
+   - "Not a black box - full transparency"
+
+3. **"Deterministic replay for debugging"**
+   - Simulate implementation failure
+   - Replay from Phase 2 to see exact state when it failed
+   - "Debug AI decisions like you debug code"
+
+4. **"Cost tracking built-in"**
+   - Show $0.13 total cost across 3 LLM providers
+   - Track token usage per agent
+   - "No surprise bills"
+
+5. **"Multi-vendor orchestration is natural"**
+   - Claude for architecture (best at design)
+   - ChatGPT for implementation (fast, good at code)
+   - Grok for review (different perspective)
+   - "Use the right model for each task"
+
+### Why This Demo Matters (2026 Context)
+
+**Current State of AI Agents (Feb 2026):**
+- LangChain, AutoGen, CrewAI - popular but opaque
+- Agents frequently exceed their intended scope
+- Debugging requires reading logs and hoping
+- Cost overruns common (agents making expensive calls)
+- Security teams don't trust agent systems in production
+
+**Strata's Unique Value:**
+- ✅ **Transparent:** Every AI decision traced with reasoning
+- ✅ **Safe:** Capability constraints enforced at compile-time
+- ✅ **Debuggable:** Deterministic replay of multi-agent workflows
+- ✅ **Cost-controlled:** Token usage visible in effect traces
+- ✅ **Auditable:** Complete chain of custody for all agent actions
+
+**Market Position:**
+> "LangChain is for prototyping AI agents. Strata is for running them in production with confidence."
+
+### Meta-Narrative Power
+
+**This demo is special because:**
+1. **It's self-referential:** "We used Strata to solve the exact problem Strata was designed for"
+2. **It's immediately useful:** People want this tool TODAY
+3. **It proves the thesis:** If Strata can orchestrate its own development, it can orchestrate anything
+4. **It's demo-able:** Can show it working in real-time
+
+**Press/Community Angle:**
+> "Strata: The AI Agent Orchestrator Built With AI Agents"
+
+This is the kind of meta-narrative that gets attention and proves technical capability simultaneously.
+
+---
+
 ## v0.1 Requirements to Support These Demos
 
 **Language features needed:**

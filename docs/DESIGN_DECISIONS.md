@@ -1,9 +1,14 @@
 # Strata Design Decisions
 
 > Key technical and architectural choices that guide implementation  
-> Updated: January 30, 2026
+> Updated: February 1, 2026
 
 This document captures important design decisions and their rationale. These are the choices that inform implementation but often don't make it into user-facing docs.
+
+For detailed analysis of major decisions, see the ADR (Architecture Decision Records) files:
+- [ADR-0001: Effect Rows Are Set-like, Orderless](adr-0001.md)
+- [ADR-0002: Hierarchical Capability Bundles](adr-0002.md)
+- [ADR-0003: Multi-Parameter Functions Over Currying](adr-0003.md)
 
 ---
 
@@ -52,6 +57,34 @@ This document captures important design decisions and their rationale. These are
 
 ---
 
+### Multi-Parameter Functions Over Currying
+
+**Decision:** Use multi-parameter syntax familiar to ops teams.
+
+**Syntax:**
+```strata
+fn add(x: Int, y: Int) -> Int {
+  x + y
+}
+```
+
+**Type Signature:**
+```strata
+add: (Int, Int) -> Int
+```
+
+**Rationale:**
+- Target audience (ops teams) expects Python/Go/Rust style multi-param syntax
+- Arity mismatch errors are clearer: "Expected 2 args, got 1" vs silent partial application
+- Capability passing is more visually distinct
+- Partial application can be explicit with lambdas when needed
+
+**See:** [ADR-0003](adr-0003.md) for full analysis and alternatives considered.
+
+**Status:** Locked in - implemented in Issue 005
+
+---
+
 ### Effect Rows Are Sets, Not Lists
 
 **Decision:** Effect rows are unordered, canonical sets.
@@ -70,6 +103,8 @@ This document captures important design decisions and their rationale. These are
 
 **Deferred:** Row polymorphism (effect variables like `E`)
 
+**See:** [ADR-0001](adr-0001.md) for detailed specification.
+
 **Status:** Implemented in Issue 002 (`strata-types/src/effects.rs`)
 
 ---
@@ -79,18 +114,30 @@ This document captures important design decisions and their rationale. These are
 **Decision:** MVP uses coarse-grained effects.
 
 **Groups:**
-- `Net` (not `DNS`, `TCP`, `HTTP` separately)
-- `FS` (not `Read`, `Write`, `Delete`)
-- `Time` (not `Clock`, `Sleep`, `Timeout`)
-- `Rand` (not `SecureRng`, `FastRng`)
+- `Net` - All network operations (HTTP, TCP, DNS, WebSockets)
+- `FS` - All filesystem operations (read, write, delete, metadata)
+- `Time` - All time operations (clock, sleep, timeout)
+- `Rand` - All randomness (secure RNG, fast RNG)
+- `Fail` - Failure/exception raising (will be parameterized later: `Fail[E]`)
 
 **Rationale:**
 - Simpler to implement and reason about
-- Avoids effect explosion
+- Avoids effect explosion (don't need 50+ effect types)
 - Sufficient for MVP auditing goals
-- Can refine later if needed
+- Can refine later if production needs demand it
 
-**Future:** Could add sub-effect taxonomy in v0.2+
+**Example of what we're NOT doing (yet):**
+```strata
+// Don't split Net into sub-effects in MVP
+& {Http, Tcp, Dns, WebSocket}  // ❌ Too granular
+
+// Use coarse-grained instead
+& {Net}  // ✅ Simple, clear
+```
+
+**Future:** Could add sub-effect taxonomy in v0.2+ if there's demand. For example, read-only vs read-write filesystem access, or secure vs fast randomness.
+
+**Status:** Implemented, working well
 
 ---
 
@@ -144,6 +191,50 @@ http_get(url, using net)?
 
 ---
 
+### Hierarchical Capability Bundles
+
+**Decision:** Support RBAC-style capability bundles to manage complex permission sets.
+
+**Problem:** Real-world functions need many capabilities. Writing them individually is verbose and unmaintainable.
+
+**Solution:** Named capability bundles with hierarchical sub-roles.
+
+**Example:**
+```strata
+// Define reusable role
+capability IncidentResponder = {
+  GitHub: {Read, Comment, Issues},
+  Slack: {Read, Write},
+  K8s: {Read, Logs},
+  PagerDuty: {Trigger, Acknowledge}
+}
+
+// Define specialized sub-role
+capability IncidentResponder.Scribe = {
+  GitHub: {Comment, Issues},
+  Slack: {Write}
+  // Can document but can't investigate or escalate
+}
+
+// Use in function
+fn handle_incident(
+  alert: Alert,
+  using cap: IncidentResponder
+) -> Result<Resolution, Error> & {Net, GitHub, Slack, K8s, PagerDuty}
+```
+
+**Tooling support:**
+```fish
+strata describe role IncidentResponder
+# Shows all capabilities, sub-roles, usage
+```
+
+**See:** [ADR-0002](adr-0002.md) for full design including compiler warnings for over-permission.
+
+**Status:** Planned for v0.2 (after fine-grained capabilities work in v0.1)
+
+---
+
 ### `layer` Blocks (Sugar Only)
 
 **Decision:** `layer` is syntactic sugar, nothing more.
@@ -177,12 +268,61 @@ layer Analytics(using net: NetCap, fs: FsCap) & {Net, FS} {
 - Semicolons optional
 - Method chaining canonical, `|>` optional
 - Rust/Swift/Kotlin-adjacent readability
+- Multi-parameter functions (not curried)
 
 **Rationale:**
 - Unambiguous parsing
-- Approachable to mainstream devs
+- Approachable to mainstream devs (Python, Go, Rust backgrounds)
 - Easy to read during audits
-- Familiar to target audience
+- Familiar to target audience (ops teams, not FP researchers)
+
+**Design Philosophy:**
+> "Strata targets automation practitioners who need safe, auditable systems. Syntax should be boring, familiar, and clear—not theoretically elegant but practically confusing."
+
+---
+
+## Profiles & Constraints
+
+### Execution Profiles
+
+**Decision:** Three execution profiles with different effect/capability constraints.
+
+**Profiles:**
+
+1. **Kernel Profile**
+   - **Allowed effects:** None (pure computation only)
+   - **No:** Net, FS, Time, Rand
+   - **No:** Dynamic allocation (arena-based only)
+   - **Guarantees:** Deterministic, bounded memory, no I/O
+   - **Use case:** Core algorithms, deterministic replay, embedded systems
+
+2. **Realtime Profile**
+   - **Allowed effects:** Limited Time, seeded Rand
+   - **Constrained:** Net and FS (bounded latency operations only)
+   - **No:** Garbage collection
+   - **Guarantees:** Bounded latency, backpressure, predictable timing
+   - **Use case:** Time-sensitive automation, telemetry processing
+
+3. **General Profile** (default)
+   - **Allowed effects:** All effects within capability model
+   - **No constraints:** Full language features available
+   - **Use case:** Standard automation scripts, agent orchestration
+
+**Enforcement:**
+```strata
+// Declared at module or package level
+profile Kernel;
+
+fn compute(x: Int, y: Int) -> Int {
+  x + y  // OK - pure computation
+}
+
+fn bad_fetch(url: Url) -> String & {Net} {
+  // Compile error: Net effect not allowed in Kernel profile
+}
+```
+
+**Status:** Types exist, enforcement layer planned for v0.2
 
 ---
 
@@ -233,6 +373,42 @@ strata-ast → strata-parse → strata-types → (strata-ir, strata-vm, strata-c
 - Enables Kernel profile (no I/O)
 - Makes deterministic testing easier
 - Clear separation of concerns
+
+---
+
+## Logic Engine & Explainability
+
+### Datalog-Lite Integration
+
+**Decision:** Integrate logic engine as library first, syntax sugar later.
+
+**Capabilities:**
+- Facts and rules (Datalog-like)
+- Returns both query results AND proof traces (derivation trees)
+- Pure and side-effect free
+- Integrates with host types (no separate type system)
+
+**Use case:**
+```strata
+// Define facts and rules
+logic SecurityPolicy {
+  fact: can_access(User, Resource)
+  rule: can_access(u, r) :- has_role(u, "admin")
+  rule: can_access(u, r) :- owns(u, r)
+}
+
+// Query with proof trace
+let (result, proof) = query(can_access(alice, prod_db));
+if result {
+  log_audit("Access granted", proof);  // Proof explains WHY
+} else {
+  log_audit("Access denied", proof);   // Proof explains WHY NOT
+}
+```
+
+**Goal:** AI agent decisions can be explained via proof traces showing the reasoning chain.
+
+**Status:** Library planned for v0.2, compiler syntax sugar v0.3+
 
 ---
 
@@ -320,6 +496,16 @@ fn map<T, U, E>(f: fn(T) -> U & E, xs: [T]) -> [U] & E
 
 ---
 
+### Don't: Automatic Currying
+
+**What was considered:** Haskell-style curried functions where `fn(a, b)` is really `fn(a) -> fn(b)`.
+
+**Why rejected:** Unfamiliar to target audience (ops teams), partial application errors are confusing, type signatures harder to read.
+
+**See:** [ADR-0003](adr-0003.md) for full rationale.
+
+---
+
 ## Decision Log Format
 
 When adding new decisions, use this format:
@@ -337,3 +523,8 @@ When adding new decisions, use this format:
 
 **Date:** [When decided]
 ```
+
+For major decisions that need extensive analysis, create an ADR file instead:
+- Name: `adr-NNNN.md` where NNNN is a zero-padded number
+- Link from this doc: `**See:** [ADR-NNNN](adr-NNNN.md)`
+- Keep this doc focused, use ADRs for deep dives
