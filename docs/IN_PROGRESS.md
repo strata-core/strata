@@ -1,13 +1,60 @@
 # Strata: In Progress
 
-**Last Updated:** February 1, 2026  
-**Current Version:** v0.0.5  
-**Current Focus:** Ready to merge to main  
-**Progress:** Issue 005 + 005-b complete ✅
+**Last Updated:** February 2, 2026
+**Current Version:** v0.0.6
+**Current Focus:** Ready to merge to main
+**Progress:** Issue 006 complete ✅
 
 ---
 
 ## Recent Completions
+
+### Issue 006: Blocks & Control Flow ✅
+**Completed:** February 2, 2026
+
+**Goal:** Add blocks, if/else, while, return statements, and mutable bindings.
+
+**What was built:**
+- Block expressions with tail/semicolon semantics
+- If/else expressions with branch type unification
+- While loops with proper control flow
+- Return statements with propagation through nested blocks
+- Mutable let bindings (`let mut x = ...`)
+- Assignment statements respecting mutability
+- Scope stack evaluator with proper lexical scoping
+- Closures with captured environments
+- Self-recursion and mutual recursion support
+
+**Test stats:** 133 tests passing (84 new tests added)
+
+**Key features verified:**
+- Nested block return propagation
+- 1000-iteration while loops (no stack overflow)
+- Mutual recursion (`is_even`/`is_odd` pattern)
+- Variable shadowing in nested scopes
+
+**Example programs:**
+```strata
+fn max(a: Int, b: Int) -> Int {
+    if a > b { a } else { b }
+}
+
+fn factorial(n: Int) -> Int {
+    if n <= 1 { 1 } else { n * factorial(n - 1) }
+}
+
+fn sum_to(n: Int) -> Int {
+    let mut total = 0;
+    let mut i = 1;
+    while i <= n {
+        total = total + i;
+        i = i + 1;
+    };
+    total
+}
+```
+
+---
 
 ### Issue 005-b: Soundness & Trustworthiness Hardening ✅
 **Completed:** February 1, 2026
@@ -85,32 +132,33 @@
 
 ## Next Up
 
-### Issue 006: Blocks & Control Flow
-**Estimated start:** Early-Mid February 2026
+### Issue 007: ADTs & Pattern Matching
+**Estimated start:** Mid-February 2026
 
-**Why now:** Foundation is sound and trustworthy. Ready to add control flow.
+**Why now:** Control flow complete. Ready to add algebraic data types.
 
 **Scope:**
-- Block expressions: `{ stmt; stmt; expr }`
-- If/else expressions (branches unify)
-- While loops
-- Return statements
-- Mutable let bindings (arena-based)
+- Struct definitions: `struct Point { x: Int, y: Int }`
+- Enum definitions: `enum Option<T> { Some(T), None }`
+- Generic type parameters
+- Match expressions with pattern matching
+- Exhaustiveness checking
+- Basic traits
 
 **Example:**
 ```strata
-fn max(x: Int, y: Int) -> Int {
-    if x > y { x } else { y }
+struct Point { x: Int, y: Int }
+
+enum Option<T> {
+    Some(T),
+    None,
 }
 
-fn sum(n: Int) -> Int {
-    let mut total = 0;
-    let mut i = 0;
-    while i < n {
-        total = total + i;
-        i = i + 1;
+fn unwrap_or<T>(opt: Option<T>, default: T) -> T {
+    match opt {
+        Some(x) => x,
+        None => default,
     }
-    total
 }
 ```
 
@@ -137,6 +185,6 @@ fn sum(n: Int) -> Int {
 
 **Codebase:**
 - 4 crates (strata-ast, strata-parse, strata-types, strata-cli)
-- ~3,500+ lines of Rust code
-- 49 tests (all passing)
+- ~5,000+ lines of Rust code
+- 133 tests (all passing)
 - 0 clippy warnings (enforced by pre-commit)

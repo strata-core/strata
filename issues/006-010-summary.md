@@ -1,8 +1,8 @@
 # Issue 006: Blocks & Control Flow
 
-**Status:** Planned  
-**Estimated time:** 7 days  
-**Phase:** 2 (Basic Type System)  
+**Status:** ✅ Complete
+**Completed:** February 2, 2026
+**Phase:** 2 (Basic Type System)
 **Depends on:** Issue 005
 
 ## Goal
@@ -20,7 +20,7 @@ fn sum(n: Int) -> Int {
     while i < n {
         total = total + i;
         i = i + 1;
-    }
+    };
     total
 }
 ```
@@ -33,12 +33,19 @@ fn sum(n: Int) -> Int {
 - Mutable let bindings (simple, no borrow checking)
 
 ## Definition of Done
-- [ ] AST nodes for Block, If, While, Return
-- [ ] Parser for control flow syntax
-- [ ] Type checking: if branches same type, block final expr is type
-- [ ] Evaluator support for all constructs
-- [ ] Tests for control flow
-- [ ] Tests for type errors in branches
+- [x] AST nodes for Block, If, While, Return
+- [x] Parser for control flow syntax
+- [x] Type checking: if branches same type, block final expr is type
+- [x] Evaluator support for all constructs
+- [x] Tests for control flow
+- [x] Tests for type errors in branches
+
+## Implementation Notes
+- 133 tests passing (84 new tests)
+- Lexer: 5 new keywords (if, else, while, return, mut)
+- Parser: Block/Statement/If/While/Return parsing with proper semicolon rules
+- Type inference: CheckContext with env, mutability tracking, expected_return
+- Evaluator: Scope stack, closures, ControlFlow enum, mutual recursion support
 
 ---
 

@@ -1,7 +1,7 @@
 # Strata - Implemented Features
 
-> Last updated: January 31, 2026  
-> Status: Issues 001-004 complete (v0.0.4)
+> Last updated: February 2, 2026
+> Status: Issues 001-006 complete (v0.0.6)
 
 ## ✅ Working Features (v0.0.4)
 
@@ -144,7 +144,112 @@ let bad4 = unknown_var;    // Unknown variable
 
 ---
 
-### CLI (Issue 001, updated in 004)
+### Functions & Type Inference (Issue 005) ✨
+
+**Constraint-Based Inference:**
+- InferCtx for fresh variable generation and constraint collection
+- Solver for constraint solving via unification
+- Generalization (∀ introduction) and instantiation (∀ elimination)
+- Polymorphic type schemes (let-polymorphism)
+
+**Functions:**
+- Function declarations with multi-param arrows
+- Function call type checking
+- Higher-order function support
+- Two-pass module checking (forward references, mutual recursion)
+
+**Soundness Hardening (005-b):**
+- Unknown identifiers error properly
+- Real unification errors (no placeholders)
+- Correct generalization boundaries
+- Numeric constraints on arithmetic
+- Constraint provenance (span tracking)
+- Determinism audit
+
+**Test Coverage:** 49 tests after Issue 005-b
+
+**What Works:**
+```strata
+fn add(x: Int, y: Int) -> Int { x + y }
+fn double(n: Int) -> Int { add(n, n) }
+
+// Polymorphic identity
+fn identity(x) { x }
+let a = identity(42);    // Int
+let b = identity(true);  // Bool
+
+// Forward references
+fn f() -> Int { g() }
+fn g() -> Int { 42 }
+```
+
+**Location:** `crates/strata-types/src/infer/`, `crates/strata-types/src/checker.rs`
+
+**Status:** Complete. Sound type inference with polymorphism.
+
+---
+
+### Blocks & Control Flow (Issue 006) ✨ NEW
+
+**Block Expressions:**
+- `{ stmt; stmt; expr }` with tail expression semantics
+- Proper semicolon rules (trailing semicolon = Unit)
+- Nested blocks with lexical scoping
+
+**Control Flow:**
+- If/else expressions (branches must unify)
+- While loops
+- Return statements (propagate through nested blocks)
+
+**Mutable Bindings:**
+- `let mut x = expr;` declarations
+- Assignment statements: `x = expr;`
+- Mutability checking (immutable assignment errors)
+
+**Evaluator:**
+- Scope stack with push/pop for blocks
+- Closures with captured environments
+- Self-recursion and mutual recursion support
+- Control flow enum (Value, Return, Break, Continue)
+
+**Test Coverage:** 133 tests (84 new in Issue 006)
+
+**What Works:**
+```strata
+fn max(a: Int, b: Int) -> Int {
+    if a > b { a } else { b }
+}
+
+fn factorial(n: Int) -> Int {
+    if n <= 1 { 1 } else { n * factorial(n - 1) }
+}
+
+fn sum_to(n: Int) -> Int {
+    let mut total = 0;
+    let mut i = 1;
+    while i <= n {
+        total = total + i;
+        i = i + 1;
+    };
+    total
+}
+
+// Mutual recursion works
+fn is_even(n: Int) -> Bool {
+    if n == 0 { true } else { is_odd(n - 1) }
+}
+fn is_odd(n: Int) -> Bool {
+    if n == 0 { false } else { is_even(n - 1) }
+}
+```
+
+**Location:** `crates/strata-cli/src/eval.rs`, `crates/strata-types/src/infer/constraint.rs`
+
+**Status:** Complete. Full control flow with working evaluator.
+
+---
+
+### CLI (Issue 001, updated in 006)
 
 **Commands:**
 ```bash
@@ -171,7 +276,11 @@ strata-cli --eval file.strata
 - Relational comparisons
 - Logical operators with short-circuit
 - String equality
-- Error on unknown variables or unsupported calls
+- Block expressions with scoping
+- If/else and while loops
+- Return statements
+- Function calls with closures
+- Mutable variable assignment
 
 **Status:** Working for all implemented syntax. Type checking integrated.
 
@@ -180,20 +289,17 @@ strata-cli --eval file.strata
 ## ❌ Not Yet Implemented
 
 **Deferred from Issue 001:**
-- Blocks: `{ stmt; stmt; expr }`
 - Match expressions
 - ADTs (struct/enum definitions)
-- Function definitions: `fn f(x: Int) -> Int { ... }` ← Issue 005
 - Method chaining: `x.map(f).filter(g)`
 - Pipe operator: `x |> f |> g`
 
 **From Later Issues:**
-- Function type checking and inference (Issue 005)
-- Constraint-based inference (Issue 005)
-- Polymorphism (Issue 005)
+- ADTs & Pattern Matching (Issue 007)
 - Traits (Issue 007)
 - Effect enforcement (Issue 008)
 - Capability checking (Issue 009)
+- Profile enforcement (Issue 010)
 - Actors & supervision
 - Datalog/logic engine
 - Bytecode VM
@@ -235,21 +341,22 @@ strata-ast       (no deps)
 
 ---
 
-## Project Stats (v0.0.4)
+## Project Stats (v0.0.6)
 
 - **Crates:** 4 (ast, parse, types, cli)
-- **Total Tests:** 45+ (parser: 13, types: 11, checker: 34+)
-- **Lines of Code:** ~2000+ (estimate)
-- **Issues Completed:** 4 (Parser, Effects, Type Scaffolding, Basic Type Checking)
-- **Example Files:** 17
-- **Time Spent:** ~1 month actual work (spread over 3 months)
+- **Total Tests:** 133 (parser: 38, types: 82, cli: 13)
+- **Lines of Code:** ~5000+ (estimate)
+- **Issues Completed:** 6 (Parser, Effects, Type Scaffolding, Basic Type Checking, Functions, Blocks)
+- **Example Files:** 20+
 
 ---
 
 ## Next Up
 
-**Issue 005: Functions & Inference**
-- Function definitions and calls
-- Constraint-based type inference
-- Polymorphism and let-polymorphism
-- Function type checking
+**Issue 007: ADTs & Pattern Matching**
+- Struct and enum definitions
+- Generic type parameters
+- Match expressions
+- Pattern matching
+- Exhaustiveness checking
+- Basic traits

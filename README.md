@@ -1,7 +1,7 @@
 # Strata — Layered Safety by Design
 
-> **Status:** Early development (v0.0.5) — Issue 005 complete  
-> **License:** MIT  
+> **Status:** Early development (v0.0.6) — Issue 006 complete
+> **License:** MIT
 > **Language:** Rust
 
 Strata is a general-purpose, strongly typed programming language designed for **safe automation**, **explainable AI**, and **resilient distributed systems**.
@@ -16,33 +16,36 @@ Strata is a general-purpose, strongly typed programming language designed for **
 - **Deterministic replay** — Seedable RNG/Time with audit logs
 - **Multi-target** — Native AOT, bytecode VM, WASM/WASI
 
-## Current Status (v0.0.5)
+## Current Status (v0.0.6)
 
 ✅ **Working:**
-- Parser with full expression support
+- Parser with full expression and control flow support
 - Constraint-based type inference system
 - Function declarations with multi-parameter arrows
 - Polymorphic types (let-polymorphism)
 - Function calls with type checking
 - Higher-order functions
-- Two-pass module checking (forward references)
-- Type inference for expressions
-- Optional type annotations
-- Clear error messages with source spans
-- **Sound type system** — no silent failures, real error messages
+- Two-pass module checking (forward references, mutual recursion)
+- **Block expressions** with tail/semicolon semantics
+- **If/else expressions** with branch type unification
+- **While loops** with proper control flow
+- **Return statements** propagating through nested blocks
+- **Mutable bindings** with mutability checking
+- Sound type system with real error messages
+- Scope-stack evaluator with closures
 - CLI with automatic type checking
-- 49 comprehensive tests (all passing)
+- 133 comprehensive tests (all passing)
 
-✅ **Recently Completed (Issue 005-b):**
-- Unknown identifier error handling
-- Real unification error messages (no placeholders)
-- Correct generalization boundaries
-- Numeric type constraints on arithmetic
-- Minimal constraint provenance (span tracking)
-- Determinism audit (stable, reproducible behavior)
+✅ **Recently Completed (Issue 006):**
+- Block expressions: `{ stmt; stmt; expr }`
+- If/else and while loops
+- Return statements
+- Mutable let bindings (`let mut x = ...`)
+- Assignment statements with mutability enforcement
+- Closures with captured environments
+- Self-recursion and mutual recursion
 
 📋 **Next Up:**
-- Issue 006: Blocks & control flow
 - Issue 007: ADTs, generics, pattern matching, basic traits
 - Issue 008-010: Effect system, capabilities, profiles
 
@@ -61,35 +64,46 @@ cargo build --workspace
 # Run an example
 cargo run -p strata-cli -- examples/add.strata
 
-# Run tests (49 tests)
+# Run tests (133 tests)
 cargo test --workspace
 ```
 
 ## Example Code
 
 ```strata
-// Current (v0.0.5) - Functions work!
-fn add(x: Int, y: Int) -> Int {
-    x + y
+// Current (v0.0.6) - Blocks & control flow work!
+fn max(a: Int, b: Int) -> Int {
+    if a > b { a } else { b }
 }
 
-fn double(n: Int) -> Int {
-    add(n, n)
+fn factorial(n: Int) -> Int {
+    if n <= 1 { 1 } else { n * factorial(n - 1) }
 }
 
-let result = double(21);  // Type checks: Int
+fn sum_to(n: Int) -> Int {
+    let mut total = 0;
+    let mut i = 1;
+    while i <= n {
+        total = total + i;
+        i = i + 1;
+    };
+    total
+}
+
+let result = sum_to(10);  // 55
+
+// Mutual recursion works!
+fn is_even(n: Int) -> Bool {
+    if n == 0 { true } else { is_odd(n - 1) }
+}
+fn is_odd(n: Int) -> Bool {
+    if n == 0 { false } else { is_even(n - 1) }
+}
 
 // Polymorphic identity function
 fn identity(x) { x }
 let a = identity(42);     // Works with Int
 let b = identity(true);   // Works with Bool
-
-// Higher-order functions
-fn apply(f, x) { f(x) }
-
-// Forward references work!
-fn f() -> Int { g() }
-fn g() -> Int { 42 }
 ```
 
 ## Development
@@ -98,7 +112,7 @@ fn g() -> Int { 42 }
 # Build everything
 cargo build --workspace
 
-# Run all tests (49 tests)
+# Run all tests (133 tests)
 cargo test --workspace
 
 # Run clippy
@@ -110,10 +124,10 @@ cargo fmt
 
 ## Roadmap
 
-**Phase 1 (Complete):** Parser, AST, basic type checking ✅  
-**Phase 2 (Current):** Functions ✅, hardening ✅, blocks (next), ADTs  
-**Phase 3:** Effect system, capabilities, profiles  
-**Phase 4:** Runtime, stdlib, WASM compilation, replay  
+**Phase 1 (Complete):** Parser, AST, basic type checking ✅
+**Phase 2 (Current):** Functions ✅, hardening ✅, blocks ✅, ADTs (next)
+**Phase 3:** Effect system, capabilities, profiles
+**Phase 4:** Runtime, stdlib, WASM compilation, replay
 **Phase 5:** Tooling, docs, killer demos, v0.1 launch  
 
 **v0.1 Target:** November 2026 - February 2027
