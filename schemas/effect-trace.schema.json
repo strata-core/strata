@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Strata Effect Trace (NDJSON entries)",
+  "type": "object",
+  "properties": {
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "span": {
+      "type": "string"
+    },
+    "effect": {
+      "type": "string",
+      "enum": [
+        "Net",
+        "FS",
+        "Time",
+        "Rand",
+        "Custom"
+      ]
+    },
+    "cap_id": {
+      "type": "string"
+    },
+    "fn": {
+      "type": "string"
+    },
+    "args": {
+      "type": "object"
+    },
+    "outcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {}
+          },
+          "required": [
+            "ok"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "err": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "err"
+          ]
+        }
+      ]
+    },
+    "replay_seed": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "ts",
+    "effect",
+    "fn",
+    "outcome"
+  ]
+}

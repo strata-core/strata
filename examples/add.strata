@@ -1,0 +1,9 @@
+fn add(x: Int, y: Int) -> Int {
+    x + y
+}
+
+fn double(n: Int) -> Int {
+    add(n, n)
+}
+
+let result = double(21);

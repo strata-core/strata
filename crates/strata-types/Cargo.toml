@@ -1,0 +1,22 @@
+[package]
+name = "strata-types"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Core type system definitions for the Strata language."
+
+[dependencies]
+# Keep it minimal to avoid cycles; no deps on strata-ast/parse.
+strata-ast = { path = "../strata-ast" }
+serde = { version = "1", features = ["derive"], optional = true }
+
+[dev-dependencies]
+serde_json = "1"
+strata-parse = { path = "../strata-parse" }
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+serde = ["dep:serde"]

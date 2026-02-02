@@ -1,0 +1,5 @@
+fn add(x: Int, y: Int) -> Int {
+    x + y
+}
+
+let bad = add(true, 5);

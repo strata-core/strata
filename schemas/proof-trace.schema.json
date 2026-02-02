@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Strata Proof Trace",
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string"
+    },
+    "result": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "derivation": {
+      "type": "object",
+      "properties": {
+        "head": {
+          "type": "string"
+        },
+        "facts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/properties/derivation"
+          }
+        }
+      },
+      "required": [
+        "head",
+        "facts"
+      ]
+    }
+  },
+  "required": [
+    "query",
+    "result",
+    "derivation"
+  ]
+}

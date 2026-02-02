@@ -1,0 +1,4 @@
+// examples/type_check_annotation_mismatch.strata
+// Type annotation doesn't match inferred type
+
+let x: Bool = 123;

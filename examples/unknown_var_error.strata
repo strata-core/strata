@@ -1,0 +1,3 @@
+fn bad() -> Int {
+    unknownVar + 1
+}

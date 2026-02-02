@@ -1,0 +1,10 @@
+// examples/type_check_good.strata
+// Valid program that should type check successfully
+
+let x: Int = 42;
+let y = 2 + 3;
+let z = true && false;
+let w = 1 < 2;
+let f: Float = 3.14;
+let s: String = "hello";
+let result = (1 + 2) * 3;

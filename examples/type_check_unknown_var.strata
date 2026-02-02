@@ -1,0 +1,4 @@
+// examples/type_check_unknown_var.strata
+// Reference to unknown variable
+
+let x = unknown_variable;

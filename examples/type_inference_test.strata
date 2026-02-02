@@ -1,0 +1,6 @@
+// examples/type_inference_test.strata
+// Tests that type inference works correctly
+
+let x = 1;           // Infers Int
+let y = x + 2;       // Uses x's inferred type
+let z = y < 10;      // Comparison returns Bool

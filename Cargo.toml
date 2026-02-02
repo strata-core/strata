@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "crates/strata-ast",
+    "crates/strata-parse",
+    "crates/strata-cli",
+    "crates/strata-types",
+]
+resolver = "2"

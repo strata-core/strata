@@ -1,0 +1,7 @@
+// examples/complex_types.strata
+// Tests complex expressions with correct types
+
+let a = (1 + 2) * 3;
+let b = 1 < 2 && 3 > 2;
+let c = (true || false) && true;
+let result = a < 10;

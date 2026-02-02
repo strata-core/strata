@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Allow skipping if needed:  SKIP_CHECKS=1 git commit -m "..."
+if [[ "${SKIP_CHECKS:-}" = "1" ]]; then
+  echo "[pre-commit] SKIPPED"
+  exit 0
+fi
+
+echo "[pre-commit] fmt check"
+cargo fmt --all -- --check
+
+echo "[pre-commit] clippy"
+cargo clippy --workspace --all-targets -- -D warnings
+
+echo "[pre-commit] tests (fast)"
+cargo test --workspace

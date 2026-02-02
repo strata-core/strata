@@ -1,0 +1,4 @@
+// examples/type_check_bad.strata
+// Invalid program that should fail type checking
+
+let bad = 1 + true;
