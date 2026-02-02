@@ -2,7 +2,7 @@ use crate::lexer::Lexer;
 use crate::token::{Tok, TokKind};
 use anyhow::{bail, Result};
 use strata_ast::ast::{
-    BinOp, Block, Expr, FnDecl, Ident, Item, LetDecl, Lit, Module, Param, TypeExpr, UnOp,
+    BinOp, Block, Expr, FnDecl, Ident, Item, LetDecl, Lit, Module, Param, Stmt, TypeExpr, UnOp,
 };
 use strata_ast::span::Span;
 
@@ -125,22 +125,8 @@ impl<'a> Parser<'a> {
             None
         };
 
-        // Parse body: { expr }
-        let body_start = self.cur.span.start;
-        self.expect(TokKind::LBrace)?;
-        let body_expr = self.parse_expr_bp(0)?;
-        let body_end = self.cur.span.end;
-        self.expect(TokKind::RBrace)?;
-
-        // Wrap single expression in a Block (temporary until Phase 2 implements block parsing)
-        let body = Block {
-            stmts: vec![],
-            tail: Some(Box::new(body_expr)),
-            span: Span {
-                start: body_start,
-                end: body_end,
-            },
-        };
+        // Parse body block
+        let body = self.parse_block()?;
 
         Ok(FnDecl {
             name,
@@ -241,6 +227,205 @@ impl<'a> Parser<'a> {
                 end: self.cur.span.end,
             },
         })
+    }
+
+    // ======= blocks and statements =======
+
+    /// Parse a block: `{ stmt* tail? }`
+    fn parse_block(&mut self) -> Result<Block> {
+        let start = self.cur.span.start;
+        self.expect(TokKind::LBrace)?;
+
+        let mut stmts = Vec::new();
+        let mut tail = None;
+
+        loop {
+            // End of block?
+            if matches!(self.cur.kind, TokKind::RBrace) {
+                break;
+            }
+
+            // Try to parse a statement or tail expression
+            match self.cur.kind {
+                TokKind::KwLet => {
+                    stmts.push(self.parse_let_stmt()?);
+                }
+                TokKind::KwReturn => {
+                    stmts.push(self.parse_return_stmt()?);
+                }
+                _ => {
+                    // Parse expression, then determine if it's a statement or tail
+                    let expr = self.parse_expr_bp(0)?;
+                    let expr_span = Span {
+                        start: node_start(&expr),
+                        end: node_end(&expr),
+                    };
+
+                    if matches!(self.cur.kind, TokKind::Eq) {
+                        // Assignment: expr = value;
+                        // expr must be a variable
+                        let target = match expr {
+                            Expr::Var(id) => id,
+                            _ => bail!("assignment target must be a variable"),
+                        };
+                        self.bump(); // consume '='
+                        let value = self.parse_expr_bp(0)?;
+                        self.expect(TokKind::Semicolon)?;
+                        let span = Span {
+                            start: expr_span.start,
+                            end: self.cur.span.end,
+                        };
+                        stmts.push(Stmt::Assign {
+                            target,
+                            value,
+                            span,
+                        });
+                    } else if matches!(self.cur.kind, TokKind::Semicolon) {
+                        // Expression statement
+                        self.bump(); // consume ';'
+                        let span = Span {
+                            start: expr_span.start,
+                            end: self.cur.span.end,
+                        };
+                        stmts.push(Stmt::Expr { expr, span });
+                    } else if matches!(self.cur.kind, TokKind::RBrace) {
+                        // Tail expression (no semicolon before closing brace)
+                        tail = Some(Box::new(expr));
+                        break;
+                    } else {
+                        bail!(
+                            "expected ';', '=', or '}}' after expression, found {:?}",
+                            self.cur.kind
+                        );
+                    }
+                }
+            }
+        }
+
+        let end_tok = self.expect(TokKind::RBrace)?;
+        Ok(Block {
+            stmts,
+            tail,
+            span: Span {
+                start,
+                end: end_tok.span.end,
+            },
+        })
+    }
+
+    /// Parse a let statement: `let [mut] name [: Type] = expr;`
+    fn parse_let_stmt(&mut self) -> Result<Stmt> {
+        let start = self.cur.span.start;
+        self.expect(TokKind::KwLet)?;
+
+        // Check for `mut` keyword
+        let mutable = if matches!(self.cur.kind, TokKind::KwMut) {
+            self.bump();
+            true
+        } else {
+            false
+        };
+
+        let name = self.parse_ident()?;
+
+        // Optional type annotation
+        let ty = if matches!(self.cur.kind, TokKind::Colon) {
+            self.bump();
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        self.expect(TokKind::Eq)?;
+        let value = self.parse_expr_bp(0)?;
+        self.expect(TokKind::Semicolon)?;
+
+        Ok(Stmt::Let {
+            mutable,
+            name,
+            ty,
+            value,
+            span: Span {
+                start,
+                end: self.cur.span.end,
+            },
+        })
+    }
+
+    /// Parse a return statement: `return [expr];`
+    fn parse_return_stmt(&mut self) -> Result<Stmt> {
+        let start = self.cur.span.start;
+        self.expect(TokKind::KwReturn)?;
+
+        // Optional return value
+        let value = if matches!(self.cur.kind, TokKind::Semicolon) {
+            None
+        } else {
+            Some(self.parse_expr_bp(0)?)
+        };
+
+        self.expect(TokKind::Semicolon)?;
+
+        Ok(Stmt::Return {
+            value,
+            span: Span {
+                start,
+                end: self.cur.span.end,
+            },
+        })
+    }
+
+    /// Parse an if expression: `if cond { } [else { }]` or `if cond { } else if cond2 { } else { }`
+    fn parse_if(&mut self) -> Result<Expr> {
+        let start = self.cur.span.start;
+        self.expect(TokKind::KwIf)?;
+
+        let cond = Box::new(self.parse_expr_bp(0)?);
+        let then_ = self.parse_block()?;
+
+        // Check for else clause
+        let else_ = if matches!(self.cur.kind, TokKind::KwElse) {
+            self.bump(); // consume 'else'
+
+            if matches!(self.cur.kind, TokKind::KwIf) {
+                // else if: parse as nested if expression
+                Some(Box::new(self.parse_if()?))
+            } else {
+                // else block
+                let else_block = self.parse_block()?;
+                Some(Box::new(Expr::Block(else_block)))
+            }
+        } else {
+            None
+        };
+
+        let span = Span {
+            start,
+            end: self.cur.span.end,
+        };
+
+        Ok(Expr::If {
+            cond,
+            then_,
+            else_,
+            span,
+        })
+    }
+
+    /// Parse a while loop: `while cond { body }`
+    fn parse_while(&mut self) -> Result<Expr> {
+        let start = self.cur.span.start;
+        self.expect(TokKind::KwWhile)?;
+
+        let cond = Box::new(self.parse_expr_bp(0)?);
+        let body = self.parse_block()?;
+
+        let span = Span {
+            start,
+            end: self.cur.span.end,
+        };
+
+        Ok(Expr::While { cond, body, span })
     }
 
     // ======= expressions (Pratt parser) =======
@@ -392,6 +577,18 @@ impl<'a> Parser<'a> {
                     },
                 })
             }
+
+            // Block expression
+            TokKind::LBrace => {
+                let block = self.parse_block()?;
+                Ok(Expr::Block(block))
+            }
+
+            // If expression
+            TokKind::KwIf => self.parse_if(),
+
+            // While loop
+            TokKind::KwWhile => self.parse_while(),
 
             _ => bail!("unexpected token in expression: {:?}", tok_kind),
         }

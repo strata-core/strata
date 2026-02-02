@@ -40,6 +40,11 @@ pub enum TokKind {
     KwTrue,
     KwFalse,
     KwNil,
+    KwIf,
+    KwElse,
+    KwWhile,
+    KwReturn,
+    KwMut,
     // literals
     Int(i64),
     Float(f64),

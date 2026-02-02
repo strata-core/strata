@@ -230,6 +230,11 @@ impl<'a> Lexer<'a> {
                 "true" => TokKind::KwTrue,
                 "false" => TokKind::KwFalse,
                 "nil" => TokKind::KwNil,
+                "if" => TokKind::KwIf,
+                "else" => TokKind::KwElse,
+                "while" => TokKind::KwWhile,
+                "return" => TokKind::KwReturn,
+                "mut" => TokKind::KwMut,
                 _ => TokKind::Ident(s),
             };
             return Tok {
