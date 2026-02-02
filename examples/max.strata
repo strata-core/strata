@@ -1,0 +1,10 @@
+// Example: if/else to find max of two values
+fn max(a: Int, b: Int) -> Int {
+    if a > b {
+        a
+    } else {
+        b
+    }
+}
+
+let result = max(10, 5);
