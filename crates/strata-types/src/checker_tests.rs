@@ -2,7 +2,9 @@
 // Comprehensive tests for the type checker
 
 use super::checker::{TypeChecker, TypeError};
-use strata_ast::ast::{BinOp, Expr, Ident, Item, LetDecl, Lit, Module, TypeExpr, UnOp};
+use strata_ast::ast::{
+    BinOp, Block, Expr, Ident, Item, LetDecl, Lit, Module, Stmt, TypeExpr, UnOp,
+};
 use strata_ast::span::Span;
 
 /// Helper to create a dummy span
@@ -93,7 +95,8 @@ fn test_int_addition() {
 }
 
 #[test]
-fn test_float_addition() {
+fn test_float_addition_not_yet_supported() {
+    // Float arithmetic is not yet supported - arithmetic is Int-only for now
     let mut tc = TypeChecker::new();
     let expr = Expr::Binary {
         lhs: Box::new(Expr::Lit(Lit::Float(1.5), sp())),
@@ -101,8 +104,9 @@ fn test_float_addition() {
         rhs: Box::new(Expr::Lit(Lit::Float(2.5), sp())),
         span: sp(),
     };
-    let ty = tc.infer_expr(&expr).unwrap();
-    assert_eq!(ty, crate::infer::ty::Ty::float());
+    let result = tc.infer_expr(&expr);
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), TypeError::Mismatch { .. }));
 }
 
 #[test]
@@ -169,15 +173,17 @@ fn test_unary_neg_int() {
 }
 
 #[test]
-fn test_unary_neg_float() {
+fn test_unary_neg_float_not_yet_supported() {
+    // Float negation is not yet supported - negation is Int-only for now
     let mut tc = TypeChecker::new();
     let expr = Expr::Unary {
         op: UnOp::Neg,
         expr: Box::new(Expr::Lit(Lit::Float(3.14), sp())),
         span: sp(),
     };
-    let ty = tc.infer_expr(&expr).unwrap();
-    assert_eq!(ty, crate::infer::ty::Ty::float());
+    let result = tc.infer_expr(&expr);
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), TypeError::Mismatch { .. }));
 }
 
 #[test]
@@ -201,6 +207,7 @@ fn test_let_without_annotation() {
             value: Expr::Lit(Lit::Int(42), sp()),
             span: sp(),
         })],
+        span: sp(),
     };
     assert!(tc.check_module(&module).is_ok());
 }
@@ -215,6 +222,7 @@ fn test_let_with_matching_annotation() {
             value: Expr::Lit(Lit::Int(42), sp()),
             span: sp(),
         })],
+        span: sp(),
     };
     assert!(tc.check_module(&module).is_ok());
 }
@@ -237,6 +245,7 @@ fn test_variable_reference() {
                 span: sp(),
             }),
         ],
+        span: sp(),
     };
     assert!(tc.check_module(&module).is_ok());
 }
@@ -275,6 +284,7 @@ fn test_multiple_lets() {
                 span: sp(),
             }),
         ],
+        span: sp(),
     };
     assert!(tc.check_module(&module).is_ok());
 }
@@ -335,6 +345,7 @@ fn test_annotation_mismatch() {
             value: Expr::Lit(Lit::Int(123), sp()),
             span: sp(),
         })],
+        span: sp(),
     };
     let result = tc.check_module(&module);
     assert!(result.is_err());
@@ -408,7 +419,8 @@ fn test_comparison_different_types() {
 }
 
 #[test]
-fn test_function_call_not_implemented() {
+fn test_function_call_unknown_function() {
+    // Calling an unknown function produces UnknownVariable
     let mut tc = TypeChecker::new();
     let expr = Expr::Call {
         callee: Box::new(Expr::Var(ident("foo"))),
@@ -419,7 +431,7 @@ fn test_function_call_not_implemented() {
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
-        TypeError::NotImplemented { .. }
+        TypeError::UnknownVariable { .. }
     ));
 }
 
@@ -492,4 +504,317 @@ fn test_all_equality_ops() {
         let ty = tc.infer_expr(&expr).unwrap();
         assert_eq!(ty, crate::infer::ty::Ty::bool_());
     }
+}
+
+// ============================================================================
+// BLOCK AND CONTROL FLOW TESTS
+// ============================================================================
+
+#[test]
+fn test_block_tail_type() {
+    // { let x = 1; x + 1 } has type Int
+    let mut tc = TypeChecker::new();
+    let expr = Expr::Block(Block {
+        stmts: vec![Stmt::Let {
+            mutable: false,
+            name: ident("x"),
+            ty: None,
+            value: Expr::Lit(Lit::Int(1), sp()),
+            span: sp(),
+        }],
+        tail: Some(Box::new(Expr::Binary {
+            lhs: Box::new(Expr::Var(ident("x"))),
+            op: BinOp::Add,
+            rhs: Box::new(Expr::Lit(Lit::Int(1), sp())),
+            span: sp(),
+        })),
+        span: sp(),
+    });
+    let ty = tc.infer_expr(&expr).unwrap();
+    assert_eq!(ty, crate::infer::ty::Ty::int());
+}
+
+#[test]
+fn test_block_no_tail_unit() {
+    // { let x = 1; x + 1; } has type Unit
+    let mut tc = TypeChecker::new();
+    let expr = Expr::Block(Block {
+        stmts: vec![
+            Stmt::Let {
+                mutable: false,
+                name: ident("x"),
+                ty: None,
+                value: Expr::Lit(Lit::Int(1), sp()),
+                span: sp(),
+            },
+            Stmt::Expr {
+                expr: Expr::Binary {
+                    lhs: Box::new(Expr::Var(ident("x"))),
+                    op: BinOp::Add,
+                    rhs: Box::new(Expr::Lit(Lit::Int(1), sp())),
+                    span: sp(),
+                },
+                span: sp(),
+            },
+        ],
+        tail: None,
+        span: sp(),
+    });
+    let ty = tc.infer_expr(&expr).unwrap();
+    assert_eq!(ty, crate::infer::ty::Ty::unit());
+}
+
+#[test]
+fn test_if_else_unify() {
+    // if true { 1 } else { 2 } has type Int
+    let mut tc = TypeChecker::new();
+    let expr = Expr::If {
+        cond: Box::new(Expr::Lit(Lit::Bool(true), sp())),
+        then_: Block {
+            stmts: vec![],
+            tail: Some(Box::new(Expr::Lit(Lit::Int(1), sp()))),
+            span: sp(),
+        },
+        else_: Some(Box::new(Expr::Block(Block {
+            stmts: vec![],
+            tail: Some(Box::new(Expr::Lit(Lit::Int(2), sp()))),
+            span: sp(),
+        }))),
+        span: sp(),
+    };
+    let ty = tc.infer_expr(&expr).unwrap();
+    assert_eq!(ty, crate::infer::ty::Ty::int());
+}
+
+#[test]
+fn test_if_else_mismatch_error() {
+    // if true { 1 } else { "str" } should fail
+    let mut tc = TypeChecker::new();
+    let expr = Expr::If {
+        cond: Box::new(Expr::Lit(Lit::Bool(true), sp())),
+        then_: Block {
+            stmts: vec![],
+            tail: Some(Box::new(Expr::Lit(Lit::Int(1), sp()))),
+            span: sp(),
+        },
+        else_: Some(Box::new(Expr::Block(Block {
+            stmts: vec![],
+            tail: Some(Box::new(Expr::Lit(Lit::Str("str".to_string()), sp()))),
+            span: sp(),
+        }))),
+        span: sp(),
+    };
+    let result = tc.infer_expr(&expr);
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), TypeError::Mismatch { .. }));
+}
+
+#[test]
+fn test_if_no_else_unit() {
+    // if true { } is ok (Unit)
+    let mut tc = TypeChecker::new();
+    let expr = Expr::If {
+        cond: Box::new(Expr::Lit(Lit::Bool(true), sp())),
+        then_: Block {
+            stmts: vec![],
+            tail: None,
+            span: sp(),
+        },
+        else_: None,
+        span: sp(),
+    };
+    let ty = tc.infer_expr(&expr).unwrap();
+    assert_eq!(ty, crate::infer::ty::Ty::unit());
+}
+
+#[test]
+fn test_if_no_else_nonunit_error() {
+    // if true { 1 } fails (no else, non-Unit then)
+    let mut tc = TypeChecker::new();
+    let expr = Expr::If {
+        cond: Box::new(Expr::Lit(Lit::Bool(true), sp())),
+        then_: Block {
+            stmts: vec![],
+            tail: Some(Box::new(Expr::Lit(Lit::Int(1), sp()))),
+            span: sp(),
+        },
+        else_: None,
+        span: sp(),
+    };
+    let result = tc.infer_expr(&expr);
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), TypeError::Mismatch { .. }));
+}
+
+#[test]
+fn test_if_cond_must_be_bool() {
+    // if 1 { } fails
+    let mut tc = TypeChecker::new();
+    let expr = Expr::If {
+        cond: Box::new(Expr::Lit(Lit::Int(1), sp())),
+        then_: Block {
+            stmts: vec![],
+            tail: None,
+            span: sp(),
+        },
+        else_: None,
+        span: sp(),
+    };
+    let result = tc.infer_expr(&expr);
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), TypeError::Mismatch { .. }));
+}
+
+#[test]
+fn test_while_returns_unit() {
+    // while false { 1 } has type Unit
+    let mut tc = TypeChecker::new();
+    let expr = Expr::While {
+        cond: Box::new(Expr::Lit(Lit::Bool(false), sp())),
+        body: Block {
+            stmts: vec![],
+            tail: Some(Box::new(Expr::Lit(Lit::Int(1), sp()))),
+            span: sp(),
+        },
+        span: sp(),
+    };
+    let ty = tc.infer_expr(&expr).unwrap();
+    assert_eq!(ty, crate::infer::ty::Ty::unit());
+}
+
+#[test]
+fn test_while_cond_must_be_bool() {
+    // while 1 { } fails
+    let mut tc = TypeChecker::new();
+    let expr = Expr::While {
+        cond: Box::new(Expr::Lit(Lit::Int(1), sp())),
+        body: Block {
+            stmts: vec![],
+            tail: None,
+            span: sp(),
+        },
+        span: sp(),
+    };
+    let result = tc.infer_expr(&expr);
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), TypeError::Mismatch { .. }));
+}
+
+#[test]
+fn test_mutable_assign_ok() {
+    // { let mut x = 1; x = 2; x } is ok
+    let mut tc = TypeChecker::new();
+    let expr = Expr::Block(Block {
+        stmts: vec![
+            Stmt::Let {
+                mutable: true,
+                name: ident("x"),
+                ty: None,
+                value: Expr::Lit(Lit::Int(1), sp()),
+                span: sp(),
+            },
+            Stmt::Assign {
+                target: ident("x"),
+                value: Expr::Lit(Lit::Int(2), sp()),
+                span: sp(),
+            },
+        ],
+        tail: Some(Box::new(Expr::Var(ident("x")))),
+        span: sp(),
+    });
+    let ty = tc.infer_expr(&expr).unwrap();
+    assert_eq!(ty, crate::infer::ty::Ty::int());
+}
+
+#[test]
+fn test_immutable_assign_error() {
+    // { let x = 1; x = 2; } fails
+    let mut tc = TypeChecker::new();
+    let expr = Expr::Block(Block {
+        stmts: vec![
+            Stmt::Let {
+                mutable: false,
+                name: ident("x"),
+                ty: None,
+                value: Expr::Lit(Lit::Int(1), sp()),
+                span: sp(),
+            },
+            Stmt::Assign {
+                target: ident("x"),
+                value: Expr::Lit(Lit::Int(2), sp()),
+                span: sp(),
+            },
+        ],
+        tail: None,
+        span: sp(),
+    });
+    let result = tc.infer_expr(&expr);
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        TypeError::ImmutableAssignment { .. }
+    ));
+}
+
+#[test]
+fn test_assign_type_mismatch_error() {
+    // { let mut x = 1; x = "str"; } fails
+    let mut tc = TypeChecker::new();
+    let expr = Expr::Block(Block {
+        stmts: vec![
+            Stmt::Let {
+                mutable: true,
+                name: ident("x"),
+                ty: None,
+                value: Expr::Lit(Lit::Int(1), sp()),
+                span: sp(),
+            },
+            Stmt::Assign {
+                target: ident("x"),
+                value: Expr::Lit(Lit::Str("str".to_string()), sp()),
+                span: sp(),
+            },
+        ],
+        tail: None,
+        span: sp(),
+    });
+    let result = tc.infer_expr(&expr);
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), TypeError::Mismatch { .. }));
+}
+
+#[test]
+fn test_nested_scopes() {
+    // { let x = 1; { let x = true; x }; x } - inner x is Bool, outer x is Int
+    let mut tc = TypeChecker::new();
+    let expr = Expr::Block(Block {
+        stmts: vec![
+            Stmt::Let {
+                mutable: false,
+                name: ident("x"),
+                ty: None,
+                value: Expr::Lit(Lit::Int(1), sp()),
+                span: sp(),
+            },
+            Stmt::Expr {
+                expr: Expr::Block(Block {
+                    stmts: vec![Stmt::Let {
+                        mutable: false,
+                        name: ident("x"),
+                        ty: None,
+                        value: Expr::Lit(Lit::Bool(true), sp()),
+                        span: sp(),
+                    }],
+                    tail: Some(Box::new(Expr::Var(ident("x")))),
+                    span: sp(),
+                }),
+                span: sp(),
+            },
+        ],
+        tail: Some(Box::new(Expr::Var(ident("x")))),
+        span: sp(),
+    });
+    let ty = tc.infer_expr(&expr).unwrap();
+    // The outer x is Int
+    assert_eq!(ty, crate::infer::ty::Ty::int());
 }

@@ -14,6 +14,8 @@ pub enum TypeError {
     Mismatch { expected: Ty, found: Ty, span: Span },
     /// Reference to an unknown variable
     UnknownVariable { name: String, span: Span },
+    /// Assignment to an immutable variable
+    ImmutableAssignment { name: String, span: Span },
     /// Feature not yet implemented
     NotImplemented { msg: String, span: Span },
 }
@@ -34,6 +36,13 @@ impl std::fmt::Display for TypeError {
             }
             TypeError::UnknownVariable { name, span } => {
                 write!(f, "Unknown variable '{}' at {:?}", name, span)
+            }
+            TypeError::ImmutableAssignment { name, span } => {
+                write!(
+                    f,
+                    "Cannot assign to immutable variable '{}' at {:?}",
+                    name, span
+                )
             }
             TypeError::NotImplemented { msg, span } => {
                 write!(f, "{} at {:?}", msg, span)
@@ -65,6 +74,34 @@ impl TypeChecker {
             env: HashMap::new(),
             infer_ctx: InferCtx::new(),
         }
+    }
+
+    /// Infer the type of an expression
+    ///
+    /// This is the main entry point for expression type checking.
+    /// It creates a CheckContext, infers the expression type, solves constraints,
+    /// and returns the final type.
+    pub fn infer_expr(&mut self, expr: &strata_ast::ast::Expr) -> Result<Ty, TypeError> {
+        use super::infer::constraint::CheckContext;
+
+        // Create a CheckContext from the current environment
+        let ctx = CheckContext::from_env(self.env.clone());
+
+        // Infer the expression type
+        let ty = self
+            .infer_ctx
+            .infer_expr_ctx(&ctx, expr)
+            .map_err(infer_error_to_type_error)?;
+
+        // Solve constraints
+        let constraints = self.infer_ctx.take_constraints();
+        let mut solver = Solver::new();
+        let subst = solver
+            .solve(constraints)
+            .map_err(|e| unifier_error_to_type_error(e, Span { start: 0, end: 0 }))?;
+
+        // Apply substitution to get final type
+        Ok(subst.apply(&ty))
     }
 
     /// Type check an entire module using two-pass approach
@@ -150,6 +187,9 @@ impl TypeChecker {
     /// The function's type has already been predeclared in Pass 1.
     /// We now check the body and verify it matches the declared type.
     fn check_fn(&mut self, decl: &strata_ast::ast::FnDecl) -> Result<(), TypeError> {
+        use super::infer::constraint::CheckContext;
+        use super::infer::ty::Scheme;
+
         // Get the predeclared function type from environment
         let predeclared_scheme = self
             .env
@@ -166,25 +206,24 @@ impl TypeChecker {
             _ => panic!("Function type should be an arrow"),
         };
 
-        // Create a new environment for the function body
-        let mut fn_env = self.env.clone();
+        // Create a CheckContext for the function body
+        let mut fn_ctx = CheckContext::from_env(self.env.clone());
+        fn_ctx.expected_return = Some(ret_ty.clone());
 
-        // Add parameters to function environment
+        // Add parameters to function context (parameters are immutable)
         for (param, param_ty) in decl.params.iter().zip(param_tys.iter()) {
-            use super::infer::ty::Scheme;
-            fn_env.insert(param.name.text.clone(), Scheme::mono(param_ty.clone()));
+            fn_ctx.bind(
+                param.name.text.clone(),
+                Scheme::mono(param_ty.clone()),
+                false,
+            );
         }
 
-        // Infer body type from the Block's tail expression
-        // (Full block inference will be implemented in Phase 3)
-        let body_ty = if let Some(ref tail_expr) = decl.body.tail {
-            self.infer_ctx
-                .infer_expr(&fn_env, tail_expr)
-                .map_err(infer_error_to_type_error)?
-        } else {
-            // Empty block or no tail expression returns Unit
-            Ty::unit()
-        };
+        // Infer body type using full block inference
+        let body_ty = self
+            .infer_ctx
+            .infer_block(&fn_ctx, &decl.body)
+            .map_err(infer_error_to_type_error)?;
 
         // Constrain body type to match return type
         self.infer_ctx
@@ -269,6 +308,9 @@ fn infer_error_to_type_error(err: super::infer::constraint::InferError) -> TypeE
     match err {
         super::infer::constraint::InferError::UnknownVariable { name, span } => {
             TypeError::UnknownVariable { name, span }
+        }
+        super::infer::constraint::InferError::ImmutableAssignment { name, span } => {
+            TypeError::ImmutableAssignment { name, span }
         }
         super::infer::constraint::InferError::NotImplemented { msg, span } => {
             TypeError::NotImplemented { msg, span }

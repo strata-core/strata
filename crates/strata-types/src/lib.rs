@@ -7,6 +7,9 @@ mod effects;
 mod profile;
 mod types;
 
+#[cfg(test)]
+mod checker_tests;
+
 pub use checker::{TypeChecker, TypeError};
 pub use effects::{Effect, EffectRow};
 pub use profile::Profile;
