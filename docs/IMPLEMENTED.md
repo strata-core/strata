@@ -1,9 +1,9 @@
 # Strata - Implemented Features
 
-> Last updated: February 2, 2026
-> Status: Issues 001-006 complete (v0.0.6)
+> Last updated: February 3, 2026
+> Status: Issues 001-006 complete, hardening complete (v0.0.7.0)
 
-## ✅ Working Features (v0.0.4)
+## ✅ Working Features (v0.0.7.0)
 
 ### Parser & AST (Issue 001)
 
@@ -87,7 +87,7 @@ let w = 1 < 2;
 
 ---
 
-### Basic Type Checking (Issue 004) ✨ NEW
+### Basic Type Checking (Issue 004)
 
 **Type Checker:**
 - Expression type inference for all AST nodes
@@ -144,7 +144,7 @@ let bad4 = unknown_var;    // Unknown variable
 
 ---
 
-### Functions & Type Inference (Issue 005) ✨
+### Functions & Type Inference (Issue 005)
 
 **Constraint-Based Inference:**
 - InferCtx for fresh variable generation and constraint collection
@@ -189,7 +189,7 @@ fn g() -> Int { 42 }
 
 ---
 
-### Blocks & Control Flow (Issue 006) ✨ NEW
+### Blocks & Control Flow (Issue 006)
 
 **Block Expressions:**
 - `{ stmt; stmt; expr }` with tail expression semantics
@@ -212,7 +212,10 @@ fn g() -> Int { 42 }
 - Self-recursion and mutual recursion support
 - Control flow enum (Value, Return, Break, Continue)
 
-**Test Coverage:** 133 tests (84 new in Issue 006)
+**Ty::Never (Bottom Type):**
+- Diverging expressions (return, infinite loops) have type `Never`
+- Never only unifies with itself (conservative, not wildcard)
+- Sound handling in if/else and block inference
 
 **What Works:**
 ```strata
@@ -249,7 +252,39 @@ fn is_odd(n: Int) -> Bool {
 
 ---
 
-### CLI (Issue 001, updated in 006)
+### Security Hardening (Issue 006-Hardening) ✨ NEW
+
+**DoS Protection Limits:**
+| Limit | Value | Purpose |
+|-------|-------|---------|
+| Source size | 1 MB | Prevent memory exhaustion |
+| Token count | 200,000 | Bound lexer work |
+| Parser nesting | 512 | Prevent stack overflow in parser |
+| Inference depth | 512 | Bound type inference recursion |
+| Eval call depth | 1,000 | Prevent runaway recursion at runtime |
+
+**Soundness Fixes:**
+- `Ty::Never` no longer unifies with arbitrary types
+- Divergence handled correctly in inference (if/else, blocks)
+- Removed panic!/expect() from type checker
+- Token limit latching (can't reset mid-parse)
+- Scope guard for guaranteed pop_scope()
+
+**Parser Improvements:**
+- `::` qualified type paths
+- Span-end fixes for accurate error locations
+- Universal lexer error surfacing
+- Nesting guards for if/while/else-if chains
+
+**Test Coverage:** 163 tests (30 new hardening tests)
+
+**Location:** Across all crates (strata-parse, strata-types, strata-cli)
+
+**Status:** Complete. Production-ready security posture for v0.1.
+
+---
+
+### CLI (Issue 001, updated through 006)
 
 **Commands:**
 ```bash
@@ -295,8 +330,7 @@ strata-cli --eval file.strata
 - Pipe operator: `x |> f |> g`
 
 **From Later Issues:**
-- ADTs & Pattern Matching (Issue 007)
-- Traits (Issue 007)
+- ADTs & Pattern Matching (Issue 007) ← **NEXT**
 - Effect enforcement (Issue 008)
 - Capability checking (Issue 009)
 - Profile enforcement (Issue 010)
@@ -315,8 +349,11 @@ strata-cli --eval file.strata
 # Build all crates
 cargo build --workspace
 
-# Run all tests (45+ tests)
+# Run all tests (163 tests)
 cargo test --workspace
+
+# Run with clippy (enforced in CI)
+cargo clippy --workspace --all-targets -- -D warnings
 
 # Run parser tests
 cargo test -p strata-parse
@@ -341,12 +378,12 @@ strata-ast       (no deps)
 
 ---
 
-## Project Stats (v0.0.6)
+## Project Stats (v0.0.7.0)
 
 - **Crates:** 4 (ast, parse, types, cli)
-- **Total Tests:** 133 (parser: 38, types: 82, cli: 13)
-- **Lines of Code:** ~5000+ (estimate)
-- **Issues Completed:** 6 (Parser, Effects, Type Scaffolding, Basic Type Checking, Functions, Blocks)
+- **Total Tests:** 163 (parser: 38, types: 82, cli: 13, hardening: 30)
+- **Lines of Code:** ~5500+ (estimate)
+- **Issues Completed:** 6 + hardening (Parser, Effects, Type Scaffolding, Basic Type Checking, Functions, Blocks, Security Hardening)
 - **Example Files:** 20+
 
 ---
@@ -359,4 +396,3 @@ strata-ast       (no deps)
 - Match expressions
 - Pattern matching
 - Exhaustiveness checking
-- Basic traits

@@ -1,7 +1,7 @@
 # Strata Roadmap
 
-**Last Updated:** January 31, 2026  
-**Current Version:** v0.0.4 (Issue 005 in progress)  
+**Last Updated:** February 3, 2026  
+**Current Version:** v0.0.7.0 (Issue 007 design review)  
 **Target v0.1:** November 2026 - February 2027 (10-14 months)
 
 This document describes the planned roadmap for Strata, organized by development phases. It reflects strategic decisions made in January 2026 to focus on a **minimal, shippable v0.1** that proves core value propositions.
@@ -74,45 +74,63 @@ Performance optimization is explicitly **deferred to v0.2+**. v0.1 prioritizes c
 **Timeline:** Months 1-4 (Jan 2026 - Apr 2026)  
 **Focus:** Get the type system solid before tackling effects
 
-### Issue 005: Functions & Inference (IN PROGRESS)
-**Status:** ~40% complete  
-**Remaining work:**
-- Constraint-based type inference (Algorithm W)
+### Issue 005: Functions & Inference ✅ COMPLETE
+**Completed:** February 1, 2026
+
+**What was built:**
+- Constraint-based type inference (Algorithm W style)
 - Function definitions with type signatures
 - Function calls with type checking
 - Generalization/instantiation (let-polymorphism)
 - Higher-order functions
+- Two-pass module checking (forward references, mutual recursion)
+- Soundness hardening (Issue 005-b): 7 critical fixes
 
-**Estimated completion:** Mid-February 2026
+**Test coverage:** 49 tests
 
-### Issue 006: Blocks & Control Flow
-**Status:** Planned  
-**Estimated time:** 1-2 weeks  
-**Scope:**
+### Issue 006: Blocks & Control Flow ✅ COMPLETE
+**Completed:** February 2, 2026
+
+**What was built:**
 - Block expressions: `{ stmt; stmt; expr }`
 - If/else expressions (branches must unify)
 - While loops
 - Return statements
 - Mutable let bindings (simple, no borrow checking)
+- `Ty::Never` with correct bottom semantics
+- Closures with captured environments
+- Mutual recursion support
 
-**Key decision:** Arena-per-function memory model (no ownership/borrow checking in v0.1)
+**Security Hardening (006-Hardening):**
+- DoS protection: nesting (512), call depth (1000), tokens (200K), inference (512), source (1MB)
+- Soundness: Never type only unifies with itself
+- Removed panic!/expect() from checker
 
-### Issue 007: ADTs & Pattern Matching
-**Status:** Planned  
-**Estimated time:** 2-3 weeks  
+**Test coverage:** 163 tests (84 new + 30 hardening)
+
+### Issue 007: ADTs & Pattern Matching ← CURRENT
+**Status:** Design review in progress  
+**Estimated time:** 10-14 days  
 **Scope:**
 - Struct definitions
 - Enum definitions with variants
 - Generic type parameters (e.g., `Option<T>`, `Result<T, E>`)
 - Match expressions with exhaustiveness checking
 - Pattern matching (literals, variables, constructors)
-- Basic traits (simple interface contracts, no associated types)
 
-**Key decision:** Traits are simplified for v0.1:
-- No default methods
-- No associated types
-- Just basic interface contracts
-- Advanced trait features deferred to v0.2
+**Key decisions under review:**
+- Nested patterns (rec: yes)
+- Match guards (rec: defer)
+- Tuple types (rec: defer)
+- Variant syntax (rec: all three — unit, tuple, struct)
+- Struct update syntax (rec: defer)
+- Visibility modifiers (rec: defer)
+
+**Soundness concerns (from Gemini):**
+1. Constructor variance — constructors as polymorphic functions
+2. Pattern scoping — mutability tracking per-arm
+3. Exhaustiveness + Never — match type = join of non-Never arms
+4. Redundant patterns — dead arms as security risk
 
 **Deferred to v0.2:**
 - Associated types in traits
@@ -239,42 +257,6 @@ fn bad_kernel(using net: NetCap) -> u32 & {Net} {
 - Trace format: timestamp, effect type, parameters, result
 - Seedable RNG and Time (for determinism)
 - CLI flag: `--trace output.json`
-
-**Design consideration: Toggleable tracing for performance**
-
-Effect tracing should be optional to avoid overhead in performance-critical scenarios:
-
-```bash
-# Default: Tracing enabled (audit trails are the value proposition)
-strata run deploy.strata --trace trace.json
-
-# Optional: Disable tracing for performance
-strata run deploy.strata --no-trace
-
-# Replay always works on captured traces
-strata replay trace.json
-```
-
-**Implementation approach:**
-- Tracing enabled by default (audit trails are Strata's differentiator)
-- `--no-trace` flag disables trace generation for performance
-- Conditional execution: trace code only runs when enabled
-- Future optimization: compile-time elimination when provably not needed
-
-**Example trace output:**
-```json
-{
-  "program": "deploy.strata",
-  "start_time": "2026-08-15T10:00:00Z",
-  "effects": [
-    {"timestamp": "...", "effect": "FS.Read", "path": "/model.pkl", "bytes": 1048576},
-    {"timestamp": "...", "effect": "Net.Post", "url": "https://...", "status": 200},
-    ...
-  ],
-  "result": "Ok(\"deploy-123\")",
-  "duration_ms": 1234
-}
-```
 
 ### 4.3: Replay Runner
 **Estimated time:** 1 week  
@@ -426,18 +408,23 @@ actor Worker {
 
 ## Timeline Summary
 
-| Phase | Duration | Completion Date | Key Deliverables |
-|-------|----------|-----------------|------------------|
-| Phase 2 (Type System) | 3-4 months | Apr 2026 | Issues 005-007 complete |
-| Phase 3 (Effects) | 2-3 months | Jul 2026 | Issues 008-010 complete |
-| Phase 4 (Runtime) | 2-3 months | Oct 2026 | Demos working, basic WASM |
-| Phase 5 (Hardening) | 3-4 months | Dec 2026 - Feb 2027 | v0.1 release |
-| **Total** | **10-14 months** | **Feb 2027** | **Strata v0.1** |
+| Phase | Duration | Completion Date | Key Deliverables | Status |
+|-------|----------|-----------------|------------------|--------|
+| Phase 2 (Type System) | 3-4 months | Apr 2026 | Issues 005-007 complete | 🔄 In Progress |
+| Phase 3 (Effects) | 2-3 months | Jul 2026 | Issues 008-010 complete | Planned |
+| Phase 4 (Runtime) | 2-3 months | Oct 2026 | Demos working, basic WASM | Planned |
+| Phase 5 (Hardening) | 3-4 months | Dec 2026 - Feb 2027 | v0.1 release | Planned |
+| **Total** | **10-14 months** | **Feb 2027** | **Strata v0.1** | |
 
-**Confidence level:** Medium-high (based on actual Issue 004 velocity)
+**Confidence level:** Medium-high (based on actual Issue 005-006 velocity)
+
+**Velocity check (Feb 2026):**
+- Issues 001-006 + hardening completed in ~2 months
+- On track for Phase 2 completion by Apr 2026
+- 163 tests, solid foundation
 
 **Risk factors:**
-- Type inference complexity (Issue 005 could take longer)
+- ADT/pattern matching complexity (Issue 007 is substantial)
 - Effect system interactions (Issues 008-010 may reveal edge cases)
 - WASM compilation challenges (Phase 4 is less predictable)
 
@@ -514,5 +501,5 @@ actor Worker {
 
 - **[KILLER_DEMOS.md](KILLER_DEMOS.md)** - Detailed v0.1 demo scenarios
 - **[IN_PROGRESS.md](IN_PROGRESS.md)** - Current work and status
-- **[005-functions-inference-roadmap.md](../issues/005-functions-inference-roadmap.md)** - Detailed strategic timeline with risk management
 - **[IMPLEMENTED.md](IMPLEMENTED.md)** - What actually works right now
+- **[DESIGN_DECISIONS.md](DESIGN_DECISIONS.md)** - Key design choices and rationale

@@ -1,6 +1,6 @@
 # Strata — Layered Safety by Design
 
-> **Status:** Early development (v0.0.6) — Issue 006 complete
+> **Status:** Early development (v0.0.7.0) — Issue 006 + hardening complete
 > **License:** MIT
 > **Language:** Rust
 
@@ -16,7 +16,7 @@ Strata is a general-purpose, strongly typed programming language designed for **
 - **Deterministic replay** — Seedable RNG/Time with audit logs
 - **Multi-target** — Native AOT, bytecode VM, WASM/WASI
 
-## Current Status (v0.0.6)
+## Current Status (v0.0.7.0)
 
 ✅ **Working:**
 - Parser with full expression and control flow support
@@ -26,27 +26,25 @@ Strata is a general-purpose, strongly typed programming language designed for **
 - Function calls with type checking
 - Higher-order functions
 - Two-pass module checking (forward references, mutual recursion)
-- **Block expressions** with tail/semicolon semantics
-- **If/else expressions** with branch type unification
-- **While loops** with proper control flow
-- **Return statements** propagating through nested blocks
-- **Mutable bindings** with mutability checking
+- Block expressions with tail/semicolon semantics
+- If/else expressions with branch type unification
+- While loops with proper control flow
+- Return statements propagating through nested blocks
+- Mutable bindings with mutability checking
+- `Ty::Never` with correct bottom semantics
 - Sound type system with real error messages
 - Scope-stack evaluator with closures
 - CLI with automatic type checking
-- 133 comprehensive tests (all passing)
+- **163 comprehensive tests** (all passing)
 
-✅ **Recently Completed (Issue 006):**
-- Block expressions: `{ stmt; stmt; expr }`
-- If/else and while loops
-- Return statements
-- Mutable let bindings (`let mut x = ...`)
-- Assignment statements with mutability enforcement
-- Closures with captured environments
-- Self-recursion and mutual recursion
+✅ **Security Hardening (v0.0.7.0):**
+- DoS protection: source size (1MB), token count (200K), parser nesting (512), inference depth (512), eval call depth (1000)
+- Soundness: `Ty::Never` only unifies with itself
+- Removed panic!/expect() from type checker
+- Universal lexer error surfacing
 
 📋 **Next Up:**
-- Issue 007: ADTs, generics, pattern matching, basic traits
+- Issue 007: ADTs, generics, pattern matching
 - Issue 008-010: Effect system, capabilities, profiles
 
 **Target v0.1:** November 2026 - February 2027
@@ -64,14 +62,14 @@ cargo build --workspace
 # Run an example
 cargo run -p strata-cli -- examples/add.strata
 
-# Run tests (133 tests)
+# Run tests (163 tests)
 cargo test --workspace
 ```
 
 ## Example Code
 
 ```strata
-// Current (v0.0.6) - Blocks & control flow work!
+// Current (v0.0.7.0) - Blocks & control flow work!
 fn max(a: Int, b: Int) -> Int {
     if a > b { a } else { b }
 }
@@ -112,11 +110,11 @@ let b = identity(true);   // Works with Bool
 # Build everything
 cargo build --workspace
 
-# Run all tests (133 tests)
+# Run all tests (163 tests)
 cargo test --workspace
 
-# Run clippy
-cargo clippy --workspace
+# Run clippy (enforced in CI)
+cargo clippy --workspace --all-targets -- -D warnings
 
 # Format code
 cargo fmt
@@ -132,7 +130,7 @@ cargo fmt
 
 **v0.1 Target:** November 2026 - February 2027
 
-See [`docs/ROADMAP.md`](docs/ROADMAP.md) for detailed plans.
+See [`docs/roadmap.md`](docs/roadmap.md) for detailed plans.
 
 ## Philosophy
 

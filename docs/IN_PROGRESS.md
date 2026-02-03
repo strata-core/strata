@@ -1,18 +1,61 @@
 # Strata: In Progress
 
-**Last Updated:** February 2, 2026
-**Current Version:** v0.0.6
-**Current Focus:** Ready to merge to main
-**Progress:** Issue 006 complete ✅
+**Last Updated:** February 3, 2026
+**Current Version:** v0.0.7.0
+**Current Focus:** Issue 007 Design Review
+**Progress:** Issues 001-006 + Hardening complete ✅
+
+---
+
+## Current Status
+
+### v0.0.7.0 Tagged ✅
+**Released:** February 3, 2026
+
+Clean CI baseline for Issue 007:
+- Fixed clippy warnings (push_str → push, removed dead code, fixed approx_constant)
+- All 163 tests passing
+- Zero warnings on `cargo clippy --workspace --all-targets -- -D warnings`
 
 ---
 
 ## Recent Completions
 
+### Issue 006-Hardening ✅
+**Completed:** February 2-3, 2026
+
+**Goal:** Security hardening and soundness fixes before Issue 007.
+
+**What was built:**
+
+**DoS Protection:**
+| Limit | Value | Purpose |
+|-------|-------|---------|
+| Source size | 1 MB | Prevent memory exhaustion |
+| Token count | 200,000 | Bound lexer work |
+| Parser nesting | 512 | Prevent stack overflow |
+| Inference depth | 512 | Bound type inference recursion |
+| Eval call depth | 1,000 | Prevent runaway recursion |
+
+**Soundness Fixes:**
+- `Ty::Never` only unifies with itself (not a wildcard)
+- Divergence handled correctly in if/else and block inference
+- Removed panic!/expect() from type checker
+- Token limit latching
+- Scope guard for guaranteed pop_scope()
+
+**Parser Improvements:**
+- `::` qualified type paths
+- Span-end fixes
+- Universal lexer error surfacing
+- Nesting guards for if/while/else-if
+
+**Test stats:** 163 tests passing (30 new hardening tests)
+
+---
+
 ### Issue 006: Blocks & Control Flow ✅
 **Completed:** February 2, 2026
-
-**Goal:** Add blocks, if/else, while, return statements, and mutable bindings.
 
 **What was built:**
 - Block expressions with tail/semicolon semantics
@@ -24,14 +67,6 @@
 - Scope stack evaluator with proper lexical scoping
 - Closures with captured environments
 - Self-recursion and mutual recursion support
-
-**Test stats:** 133 tests passing (84 new tests added)
-
-**Key features verified:**
-- Nested block return propagation
-- 1000-iteration while loops (no stack overflow)
-- Mutual recursion (`is_even`/`is_odd` pattern)
-- Variable shadowing in nested scopes
 
 **Example programs:**
 ```strata
@@ -59,93 +94,26 @@ fn sum_to(n: Int) -> Int {
 ### Issue 005-b: Soundness & Trustworthiness Hardening ✅
 **Completed:** February 1, 2026
 
-**Goal:** Make the typechecker/inference **sound enough to build on**, **deterministic enough to debug**, and **honest enough to trust** before adding blocks/control-flow in Issue 006.
-
-**Status:** ✅ **COMPLETE - All 7 fixes shipped**
-
 **What was fixed:**
-
-1. ✅ **Unknown identifiers now error properly**
-   - Fixed: `InferCtx::infer_expr` returns `Result<Ty, InferError>`
-   - Added: `InferError::UnknownVariable` variant
-   - Test: `type_error_unknown_variable`
-   - Impact: Type system no longer lies about unknown identifiers
-
-2. ✅ **Real unification errors (no placeholders)**
-   - Fixed: Thread `unifier::TypeError` through to `checker::TypeError`
-   - Added: `unifier_error_to_type_error()` conversion helper
-   - Impact: Errors show actual types ("Int vs Bool" not "Unit vs Unit")
-
-3. ✅ **Correct generalization boundaries**
-   - Fixed: Compute actual environment free vars before generalizing
-   - Added: `free_vars_scheme()` and `free_vars_env()` functions
-   - Impact: Sound polymorphism, ready for nested scopes
-
-4. ✅ **Numeric constraints on arithmetic**
-   - Fixed: Arithmetic operators (+, -, *, /) constrain to Int
-   - Fixed: Unary negation (-) constrains to Int
-   - Tests: `type_error_bool_arithmetic`, `type_error_neg_bool`
-   - Impact: `true + true` now correctly errors
-
-5. ✅ **Two-pass module checking**
-   - Fixed: Predeclare all functions in pass 1, check bodies in pass 2
-   - Added: `extract_fn_signature()` helper
-   - Tests: `forward_reference_works`, `mutual_recursion_predeclared`
-   - Impact: Forward references work, recursion enabled
-
-6. ✅ **Minimal constraint provenance**
-   - Fixed: Added `Span` field to `Constraint::Equal`
-   - Updated: All constraint generation sites include span
-   - Impact: Foundation for better error messages in Issue 006
-
-7. ✅ **Determinism audit - PASS**
-   - Audited: All HashMap iteration for non-deterministic behavior
-   - Documented: `docs/DETERMINISM_AUDIT.md`
-   - Impact: Stable, reproducible behavior - no flaky CI
-
-**Test stats:** 49 tests passing (44 existing + 5 new)
-
-**Key learnings:**
-- Post-completion soundness review is essential
-- Cost asymmetry: Hardening now prevents debugging nightmares later
-- Type system must not lie - trust is everything
-- Foundation first: don't build on broken abstractions
-
----
-
-### Issue 005: Functions & Type Inference ✅
-**Completed:** February 1, 2026
-
-**What was built:**
-- Constraint-based type inference system
-- InferCtx for fresh variable generation and constraint collection
-- Solver for constraint solving via unification
-- Generalization (∀ introduction) and instantiation (∀ elimination)
-- Function declarations with multi-param arrows
-- Function call type checking
-- Polymorphic type schemes (let-polymorphism)
-- Higher-order function support
-- 10 comprehensive function tests
-- Working CLI examples (add.strata, type_error.strata)
+1. Unknown identifiers now error properly
+2. Real unification errors (no placeholders)
+3. Correct generalization boundaries
+4. Numeric constraints on arithmetic
+5. Two-pass module checking
+6. Minimal constraint provenance
+7. Determinism audit - PASS
 
 ---
 
 ## Next Up
 
 ### Issue 007: ADTs & Pattern Matching
-**Estimated start:** Mid-February 2026
+**Status:** Design review in progress
+**Estimated time:** 10-14 days
 
-**Why now:** Control flow complete. Ready to add algebraic data types.
+**Goal:** Add structs, enums, generics, and pattern matching.
 
-**Scope:**
-- Struct definitions: `struct Point { x: Int, y: Int }`
-- Enum definitions: `enum Option<T> { Some(T), None }`
-- Generic type parameters
-- Match expressions with pattern matching
-- Exhaustiveness checking
-- Basic traits
-
-**Example:**
+**Syntax:**
 ```strata
 struct Point { x: Int, y: Int }
 
@@ -162,22 +130,47 @@ fn unwrap_or<T>(opt: Option<T>, default: T) -> T {
 }
 ```
 
+**Scope:**
+- Struct definitions
+- Enum definitions with variants
+- Generic type parameters
+- Match expressions
+- Pattern matching (literals, vars, constructors)
+- Exhaustiveness checking (Maranget algorithm)
+
+**Design Decisions Under Review:**
+1. Nested patterns — `Some(Some(x))`, struct patterns
+2. Match guards — `Some(x) if x > 0 => ...`
+3. Tuple types — `(Int, String)`
+4. Variant syntax — Unit, Tuple, Struct variants
+5. Struct update syntax — `Point { x: 1, ..other }`
+6. Visibility modifiers — `pub struct`
+
+**Critical Soundness Concerns (from Gemini):**
+1. Constructor variance — constructors as polymorphic functions
+2. Pattern scoping — mutability tracking in match arms
+3. Exhaustiveness + Never — match type = join of non-Never arms
+4. Redundant patterns — dead arms as security risk
+
+**Current activity:** Multi-LLM design review (ChatGPT, Gemini, Grok)
+
 ---
 
 ## Development Lessons
 
-### Learnings
-- **Soundness review is essential:** Initial "completion" missed critical bugs
+### Key Learnings from Issues 005-006
+- **Soundness review is essential:** Post-completion review caught 7 critical bugs
 - **Cost asymmetry:** Hardening now prevents debugging nightmares later
 - **Foundation first:** Don't build on broken abstractions
 - **Trust is everything:** Type system must not lie
-- **Velocity with correctness:** Ship fast, but ship it sound
+- **Security early:** DoS protection is foundational, not optional
 
 ### Development Philosophy
 - **Soundness over speed** — A type system that lies is worse than no type system
 - **Foundation integrity** — Fix bugs before they compound
 - **Post-completion review** — Always audit before moving forward
 - **Deterministic behavior** — Flaky tests waste more time than they save
+- **Multi-LLM review** — Fresh eyes catch things we miss
 
 ---
 
@@ -185,6 +178,10 @@ fn unwrap_or<T>(opt: Option<T>, default: T) -> T {
 
 **Codebase:**
 - 4 crates (strata-ast, strata-parse, strata-types, strata-cli)
-- ~5,000+ lines of Rust code
-- 133 tests (all passing)
-- 0 clippy warnings (enforced by pre-commit)
+- ~5,500+ lines of Rust code
+- 163 tests (all passing)
+- 0 clippy warnings (enforced by CI)
+
+**Velocity:**
+- Issues 001-006 + hardening: ~2 months
+- On track for v0.1 timeline (10-14 months total)
