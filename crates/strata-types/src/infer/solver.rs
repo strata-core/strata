@@ -5,6 +5,24 @@
 use super::subst::Subst;
 use super::ty::Constraint;
 use super::unifier::{TypeError, Unifier};
+use strata_ast::span::Span;
+
+/// Error from constraint solving, including the span where the error occurred
+#[derive(Debug, Clone)]
+pub struct SolveError {
+    /// The underlying type error from unification
+    pub error: TypeError,
+    /// The span of the constraint that failed
+    pub span: Span,
+}
+
+impl std::fmt::Display for SolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} at {:?}", self.error, self.span)
+    }
+}
+
+impl std::error::Error for SolveError {}
 
 /// Constraint solver
 pub struct Solver {
@@ -21,12 +39,14 @@ impl Solver {
 
     /// Solve a set of constraints
     ///
-    /// Returns the resulting substitution, or a type error if solving fails.
-    pub fn solve(&mut self, constraints: Vec<Constraint>) -> Result<Subst, TypeError> {
+    /// Returns the resulting substitution, or a solve error with span context if solving fails.
+    pub fn solve(&mut self, constraints: Vec<Constraint>) -> Result<Subst, SolveError> {
         for constraint in constraints {
             match constraint {
-                Constraint::Equal(t1, t2, _span) => {
-                    self.unifier.unify(&t1, &t2)?;
+                Constraint::Equal(t1, t2, span) => {
+                    self.unifier
+                        .unify(&t1, &t2)
+                        .map_err(|error| SolveError { error, span })?;
                 }
             }
         }

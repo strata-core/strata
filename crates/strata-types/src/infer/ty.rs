@@ -11,6 +11,12 @@ impl fmt::Debug for TypeVarId {
         write!(f, "t{}", self.0)
     }
 }
+
+impl fmt::Display for TypeVarId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "t{}", self.0)
+    }
+}
 impl Hash for TypeVarId {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.hash(state);
@@ -37,6 +43,10 @@ pub enum Ty {
     Tuple(Vec<Ty>),
     /// Homogeneous list: [elem]
     List(Box<Ty>),
+    /// The bottom type for diverging expressions (return, panic, etc.)
+    /// Never unifies with any type (as a subtype of all types).
+    /// This prevents "unreachable code" unification failures.
+    Never,
 }
 
 impl Ty {
@@ -127,6 +137,7 @@ impl fmt::Display for Ty {
                 write!(f, ")")
             }
             Ty::List(x) => write!(f, "[{}]", x),
+            Ty::Never => write!(f, "!"),
         }
     }
 }
@@ -184,7 +195,7 @@ pub enum Constraint {
 /// Find free type variables in a type
 pub fn free_vars(ty: &Ty) -> HashSet<TypeVarId> {
     match ty {
-        Ty::Const(_) => HashSet::new(),
+        Ty::Const(_) | Ty::Never => HashSet::new(),
         Ty::Var(id) => {
             let mut set = HashSet::new();
             set.insert(*id);

@@ -2,8 +2,10 @@ use strata_ast::span::Span;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokKind {
-    // trivia / eof
+    // trivia / eof / error
     Eof,
+    /// Error token (e.g., token limit exceeded)
+    Error(String),
     // punctuation
     LParen,
     RParen,
@@ -11,8 +13,10 @@ pub enum TokKind {
     RBrace,
     Comma,
     Colon,
+    ColonColon, // :: for namespaced paths (ADT support)
     Semicolon,
-    Arrow,
+    Arrow,    // -> for function return types
+    FatArrow, // => for pattern matching (ADT support)
     // assignment
     Eq,
     // arithmetic
@@ -45,6 +49,9 @@ pub enum TokKind {
     KwWhile,
     KwReturn,
     KwMut,
+    KwMatch,  // match keyword (ADT support)
+    KwEnum,   // enum keyword (ADT support)
+    KwStruct, // struct keyword (ADT support)
     // literals
     Int(i64),
     Float(f64),

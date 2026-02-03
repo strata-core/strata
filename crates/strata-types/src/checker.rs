@@ -1,7 +1,7 @@
 // crates/strata-types/src/checker.rs
 // Type checker for Strata - validates programs and infers types
 
-use super::infer::ty::{Scheme, Ty};
+use super::infer::ty::{Scheme, Ty, TypeVarId};
 use super::infer::{InferCtx, Solver};
 use std::collections::HashMap;
 use strata_ast::ast::{Item, LetDecl, Module, TypeExpr};
@@ -18,6 +18,18 @@ pub enum TypeError {
     ImmutableAssignment { name: String, span: Span },
     /// Feature not yet implemented
     NotImplemented { msg: String, span: Span },
+    /// Inference depth limit exceeded (pathological input)
+    DepthLimitExceeded { span: Span },
+    /// Occurs check failure (infinite type)
+    OccursCheck { var: TypeVarId, ty: Ty, span: Span },
+    /// Arity mismatch (different number of arguments)
+    ArityMismatch {
+        expected: usize,
+        found: usize,
+        span: Span,
+    },
+    /// Internal invariant violation (indicates a bug in the type checker)
+    InvariantViolation { msg: String, span: Span },
 }
 
 impl std::fmt::Display for TypeError {
@@ -46,6 +58,34 @@ impl std::fmt::Display for TypeError {
             }
             TypeError::NotImplemented { msg, span } => {
                 write!(f, "{} at {:?}", msg, span)
+            }
+            TypeError::DepthLimitExceeded { span } => {
+                write!(
+                    f,
+                    "Type inference depth limit exceeded at {:?} (pathological input)",
+                    span
+                )
+            }
+            TypeError::OccursCheck { var, ty, span } => {
+                write!(f, "Infinite type at {:?}: {} occurs in {}", span, var, ty)
+            }
+            TypeError::ArityMismatch {
+                expected,
+                found,
+                span,
+            } => {
+                write!(
+                    f,
+                    "Arity mismatch at {:?}: expected {} arguments, found {}",
+                    span, expected, found
+                )
+            }
+            TypeError::InvariantViolation { msg, span } => {
+                write!(
+                    f,
+                    "Internal error at {:?}: {} (this is a bug in the type checker)",
+                    span, msg
+                )
             }
         }
     }
@@ -98,7 +138,7 @@ impl TypeChecker {
         let mut solver = Solver::new();
         let subst = solver
             .solve(constraints)
-            .map_err(|e| unifier_error_to_type_error(e, Span { start: 0, end: 0 }))?;
+            .map_err(solve_error_to_type_error)?;
 
         // Apply substitution to get final type
         Ok(subst.apply(&ty))
@@ -106,20 +146,22 @@ impl TypeChecker {
 
     /// Type check an entire module using two-pass approach
     ///
-    /// Pass 1: Predeclare all functions (add signatures to environment)
+    /// Pass 1: Predeclare all functions with MONOMORPHIC signatures
+    ///         (prevents polymorphic self-reference in recursive calls)
     /// Pass 2: Check let bindings and function bodies
+    ///         After checking each function, generalize and update env
     pub fn check_module(&mut self, module: &Module) -> Result<(), TypeError> {
-        use super::infer::ty::free_vars_env;
-
-        // Pass 1: Predeclare all functions
+        // Pass 1: Predeclare all functions with MONOMORPHIC signatures
+        // This ensures that recursive calls see the same type variables,
+        // preventing unsound polymorphic self-reference.
         for item in &module.items {
             if let Item::Fn(decl) = item {
-                // Extract function signature
+                // Extract function signature with fresh type vars
                 let fn_ty = self.extract_fn_signature(decl)?;
 
-                // Generalize the signature
-                let env_vars = free_vars_env(&self.env);
-                let fn_scheme = self.infer_ctx.generalize(fn_ty, &env_vars);
+                // Store MONOMORPHIC placeholder - do NOT generalize yet!
+                // This is critical: recursive calls must see the same type vars.
+                let fn_scheme = Scheme::mono(fn_ty);
 
                 // Add to environment
                 self.env.insert(decl.name.text.clone(), fn_scheme);
@@ -166,7 +208,7 @@ impl TypeChecker {
         let mut solver = Solver::new();
         let subst = solver
             .solve(constraints)
-            .map_err(|e| unifier_error_to_type_error(e, decl.span))?;
+            .map_err(solve_error_to_type_error)?;
 
         // Apply substitution to get final type
         let final_ty = subst.apply(&inferred_ty);
@@ -184,26 +226,38 @@ impl TypeChecker {
 
     /// Type check a function declaration (Pass 2)
     ///
-    /// The function's type has already been predeclared in Pass 1.
-    /// We now check the body and verify it matches the declared type.
+    /// The function's type has already been predeclared in Pass 1 as MONOMORPHIC.
+    /// We now check the body, solve constraints, apply substitution, and THEN generalize.
     fn check_fn(&mut self, decl: &strata_ast::ast::FnDecl) -> Result<(), TypeError> {
         use super::infer::constraint::CheckContext;
-        use super::infer::ty::Scheme;
+        use super::infer::ty::{free_vars_env, Scheme};
 
-        // Get the predeclared function type from environment
+        // Get the predeclared function type from environment (monomorphic)
         let predeclared_scheme = self
             .env
             .get(&decl.name.text)
-            .expect("Function should be predeclared in pass 1")
+            .ok_or_else(|| TypeError::InvariantViolation {
+                msg: format!("function '{}' not predeclared in pass 1", decl.name.text),
+                span: decl.name.span,
+            })?
             .clone();
 
-        // Instantiate the predeclared scheme to get concrete types
+        // The scheme is monomorphic (no ∀-bound vars), so instantiate returns the same type.
+        // This is critical: recursive calls within the body will see the SAME type vars.
         let predeclared_ty = predeclared_scheme.instantiate(|| self.infer_ctx.fresh_var());
 
         // Extract param and return types from the arrow
-        let (param_tys, ret_ty) = match predeclared_ty {
-            Ty::Arrow(params, ret) => (params, *ret),
-            _ => panic!("Function type should be an arrow"),
+        let (param_tys, ret_ty) = match &predeclared_ty {
+            Ty::Arrow(params, ret) => (params.clone(), ret.as_ref().clone()),
+            _ => {
+                return Err(TypeError::InvariantViolation {
+                    msg: format!(
+                        "expected function type to be an arrow, found {}",
+                        predeclared_ty
+                    ),
+                    span: decl.name.span,
+                });
+            }
         };
 
         // Create a CheckContext for the function body
@@ -225,22 +279,37 @@ impl TypeChecker {
             .infer_block(&fn_ctx, &decl.body)
             .map_err(infer_error_to_type_error)?;
 
-        // Constrain body type to match return type
-        self.infer_ctx
-            .add_constraint(super::infer::ty::Constraint::Equal(
-                body_ty,
-                ret_ty.clone(),
-                decl.span,
-            ));
+        // Constrain body type to match return type (unless body always diverges)
+        // A diverging body (Never) satisfies any return type.
+        if body_ty != Ty::Never {
+            self.infer_ctx
+                .add_constraint(super::infer::ty::Constraint::Equal(
+                    body_ty,
+                    ret_ty.clone(),
+                    decl.span,
+                ));
+        }
 
         // Solve constraints
         let constraints = self.infer_ctx.take_constraints();
         let mut solver = Solver::new();
-        let _subst = solver
+        let subst = solver
             .solve(constraints)
-            .map_err(|e| unifier_error_to_type_error(e, decl.span))?;
+            .map_err(solve_error_to_type_error)?;
 
-        // Note: We don't need to re-add the function to env - it's already there from pass 1
+        // Apply substitution to get the final function type
+        let final_fn_ty = subst.apply(&predeclared_ty);
+
+        // NOW generalize: compute env vars excluding this function's own type vars
+        // (since this function is still monomorphic in env, its vars are included in env_vars,
+        // but we want to generalize those vars if they're not constrained by the environment)
+        let mut env_for_generalize = self.env.clone();
+        env_for_generalize.remove(&decl.name.text);
+        let env_vars = free_vars_env(&env_for_generalize);
+        let gen_scheme = self.infer_ctx.generalize(final_fn_ty, &env_vars);
+
+        // Update environment with the generalized scheme
+        self.env.insert(decl.name.text.clone(), gen_scheme);
 
         Ok(())
     }
@@ -315,34 +384,28 @@ fn infer_error_to_type_error(err: super::infer::constraint::InferError) -> TypeE
         super::infer::constraint::InferError::NotImplemented { msg, span } => {
             TypeError::NotImplemented { msg, span }
         }
+        super::infer::constraint::InferError::DepthLimitExceeded { span } => {
+            TypeError::DepthLimitExceeded { span }
+        }
     }
 }
 
-/// Convert unifier TypeError to checker TypeError with span context
-fn unifier_error_to_type_error(err: super::infer::unifier::TypeError, span: Span) -> TypeError {
-    match err {
+/// Convert a SolveError (which includes span) to checker TypeError
+fn solve_error_to_type_error(err: super::infer::solver::SolveError) -> TypeError {
+    let span = err.span;
+    match err.error {
         super::infer::unifier::TypeError::Mismatch(expected, found) => TypeError::Mismatch {
             expected,
             found,
             span,
         },
         super::infer::unifier::TypeError::Occurs { var, ty } => {
-            // Occurs check failure - format as mismatch for now
-            TypeError::Mismatch {
-                expected: Ty::Var(var),
-                found: ty,
-                span,
-            }
+            TypeError::OccursCheck { var, ty, span }
         }
-        super::infer::unifier::TypeError::Arity { left, right } => {
-            // Arity mismatch - format as NotImplemented for now
-            TypeError::NotImplemented {
-                msg: format!(
-                    "Arity mismatch: expected {} arguments, found {}",
-                    left, right
-                ),
-                span,
-            }
-        }
+        super::infer::unifier::TypeError::Arity { left, right } => TypeError::ArityMismatch {
+            expected: left,
+            found: right,
+            span,
+        },
     }
 }

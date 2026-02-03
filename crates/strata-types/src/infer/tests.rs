@@ -87,3 +87,51 @@ fn test_new_type_constants() {
         _ => panic!("Expected String constant"),
     }
 }
+
+/// Test that Ty::Never displays correctly
+#[test]
+fn test_never_display() {
+    assert_eq!(format!("{}", Ty::Never), "!");
+}
+
+/// Test that Never does NOT unify with Int (soundness fix).
+/// Divergence is handled in inference, not unification.
+#[test]
+fn test_never_does_not_unify_with_int() {
+    let mut u = Unifier::new();
+    assert!(u.unify(&Ty::Never, &Ty::int()).is_err());
+}
+
+/// Test that Int does NOT unify with Never (soundness fix).
+#[test]
+fn test_int_does_not_unify_with_never() {
+    let mut u = Unifier::new();
+    assert!(u.unify(&Ty::int(), &Ty::Never).is_err());
+}
+
+/// Test that Never CAN unify with type variables (var case matches first).
+/// The soundness fix is in inference (infer_if), not unification.
+/// When Never unifies with a var, the var gets bound to Never.
+#[test]
+fn test_never_unifies_with_var_binds_to_never() {
+    let mut u = Unifier::new();
+    let v = Ty::var(TypeVarId(0));
+    u.unify(&Ty::Never, &v).unwrap();
+    // The variable gets substituted to Never
+    assert_eq!(u.subst().apply(&v), Ty::Never);
+}
+
+/// Test that Never does NOT unify with complex types (soundness fix).
+#[test]
+fn test_never_does_not_unify_with_function() {
+    let mut u = Unifier::new();
+    let fn_ty = Ty::arrow(vec![Ty::int()], Ty::bool_());
+    assert!(u.unify(&Ty::Never, &fn_ty).is_err());
+}
+
+/// Test that Never unifies with Never (trivially)
+#[test]
+fn test_never_unifies_with_never() {
+    let mut u = Unifier::new();
+    u.unify(&Ty::Never, &Ty::Never).unwrap();
+}

@@ -4,8 +4,17 @@
 //! closures, and control flow (return, break, continue).
 
 use anyhow::{bail, Result};
+use std::cell::Cell;
 use std::collections::HashMap;
 use strata_ast::ast::{BinOp, Block, Expr, Lit, Module, Stmt, UnOp};
+
+/// Maximum call depth to prevent stack overflow from deep recursion
+const MAX_CALL_DEPTH: u32 = 1000;
+
+thread_local! {
+    /// Current call depth (thread-local for safety)
+    static CALL_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
 
 /// Runtime values in Strata
 #[derive(Debug, Clone)]
@@ -97,8 +106,14 @@ impl Env {
     }
 
     /// Pop the current scope off the stack
-    pub fn pop_scope(&mut self) {
+    ///
+    /// Returns an error if attempting to pop the global scope.
+    pub fn pop_scope(&mut self) -> anyhow::Result<()> {
+        if self.scopes.len() <= 1 {
+            anyhow::bail!("internal error: attempted to pop global scope");
+        }
         self.scopes.pop();
+        Ok(())
     }
 
     /// Define a new variable in the current scope
@@ -393,7 +408,7 @@ pub fn eval_block(env: &mut Env, block: &Block) -> Result<ControlFlow> {
         let cf = eval_stmt(env, stmt)?;
         // Propagate returns early
         if cf.is_return() {
-            env.pop_scope();
+            env.pop_scope()?;
             return Ok(cf);
         }
     }
@@ -405,7 +420,7 @@ pub fn eval_block(env: &mut Env, block: &Block) -> Result<ControlFlow> {
         ControlFlow::Value(Value::Unit)
     };
 
-    env.pop_scope();
+    env.pop_scope()?;
     Ok(result)
 }
 
@@ -523,6 +538,31 @@ fn eval_while(env: &mut Env, cond: &Expr, body: &Block) -> Result<ControlFlow> {
 
 /// Evaluate a function call
 fn eval_call(env: &mut Env, callee: &Expr, args: &[Expr]) -> Result<ControlFlow> {
+    // Security: Check call depth limit
+    let depth = CALL_DEPTH.with(|d| {
+        let current = d.get();
+        d.set(current + 1);
+        current + 1
+    });
+
+    if depth > MAX_CALL_DEPTH {
+        CALL_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+        bail!(
+            "maximum call depth exceeded (limit: {} calls)",
+            MAX_CALL_DEPTH
+        );
+    }
+
+    // Ensure we decrement depth even on error/return
+    let result = eval_call_inner(env, callee, args);
+
+    CALL_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+
+    result
+}
+
+/// Inner implementation of eval_call (without depth tracking)
+fn eval_call_inner(env: &mut Env, callee: &Expr, args: &[Expr]) -> Result<ControlFlow> {
     // Evaluate callee
     let cf = eval_expr(env, callee)?;
     if cf.is_return() {
@@ -594,7 +634,7 @@ fn eval_call(env: &mut Env, callee: &Expr, args: &[Expr]) -> Result<ControlFlow>
     // Evaluate body
     let result = eval_block(&mut closure_env, &body)?;
 
-    closure_env.pop_scope();
+    closure_env.pop_scope()?;
 
     // Unwrap Return at function boundary
     Ok(ControlFlow::Value(result.into_value()))

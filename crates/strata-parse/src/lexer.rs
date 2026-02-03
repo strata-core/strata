@@ -1,9 +1,17 @@
 use crate::token::{Tok, TokKind};
 use strata_ast::span::Span;
 
+/// Maximum number of tokens allowed in a single source file.
+/// This prevents denial of service from pathological inputs.
+const MAX_TOKEN_COUNT: usize = 200_000;
+
 pub struct Lexer<'a> {
     src: &'a [u8],
     pos: usize,
+    /// Number of tokens emitted (for limit enforcement)
+    token_count: usize,
+    /// True once token limit is hit (latches to prevent repeated errors)
+    hit_token_limit: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -11,6 +19,8 @@ impl<'a> Lexer<'a> {
         Self {
             src: src.as_bytes(),
             pos: 0,
+            token_count: 0,
+            hit_token_limit: false,
         }
     }
 
@@ -60,6 +70,33 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn next_tok(&mut self) -> Tok {
+        // If token limit was already hit, return EOF to prevent infinite error loop
+        if self.hit_token_limit {
+            return Tok {
+                kind: TokKind::Eof,
+                span: Span {
+                    start: self.pos as u32,
+                    end: self.pos as u32,
+                },
+            };
+        }
+
+        // Security: Check token count limit (streaming)
+        self.token_count += 1;
+        if self.token_count > MAX_TOKEN_COUNT {
+            self.hit_token_limit = true;
+            return Tok {
+                kind: TokKind::Error(format!(
+                    "token count limit exceeded (max {} tokens)",
+                    MAX_TOKEN_COUNT
+                )),
+                span: Span {
+                    start: self.pos as u32,
+                    end: self.pos as u32,
+                },
+            };
+        }
+
         self.skip_ws_and_comments();
         let start = self.pos;
         let Some(b) = self.bump() else {
@@ -95,6 +132,14 @@ impl<'a> Lexer<'a> {
                 span: self.span(start),
             };
         }
+        // FatArrow: =>
+        if c == '=' && self.peek() == Some(b'>') {
+            self.bump();
+            return Tok {
+                kind: TokKind::FatArrow,
+                span: self.span(start),
+            };
+        }
         if c == '!' && self.peek() == Some(b'=') {
             self.bump();
             return Tok {
@@ -121,6 +166,14 @@ impl<'a> Lexer<'a> {
             self.bump();
             return Tok {
                 kind: TokKind::Arrow,
+                span: self.span(start),
+            };
+        }
+        // ColonColon: ::
+        if c == ':' && self.peek() == Some(b':') {
+            self.bump();
+            return Tok {
+                kind: TokKind::ColonColon,
                 span: self.span(start),
             };
         }
@@ -200,13 +253,21 @@ impl<'a> Lexer<'a> {
                 }
             }
             if dot {
+                let kind = match s.parse::<f64>() {
+                    Ok(f) => TokKind::Float(f),
+                    Err(_) => TokKind::Error(format!("invalid float literal: {}", s)),
+                };
                 return Tok {
-                    kind: TokKind::Float(s.parse().unwrap()),
+                    kind,
                     span: self.span(start),
                 };
             } else {
+                let kind = match s.parse::<i64>() {
+                    Ok(i) => TokKind::Int(i),
+                    Err(_) => TokKind::Error(format!("integer literal out of range: {}", s)),
+                };
                 return Tok {
-                    kind: TokKind::Int(s.parse().unwrap()),
+                    kind,
                     span: self.span(start),
                 };
             }
@@ -235,6 +296,9 @@ impl<'a> Lexer<'a> {
                 "while" => TokKind::KwWhile,
                 "return" => TokKind::KwReturn,
                 "mut" => TokKind::KwMut,
+                "match" => TokKind::KwMatch,
+                "enum" => TokKind::KwEnum,
+                "struct" => TokKind::KwStruct,
                 _ => TokKind::Ident(s),
             };
             return Tok {

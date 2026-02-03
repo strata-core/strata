@@ -31,7 +31,7 @@ impl Subst {
                     Ty::Var(*v)
                 }
             }
-            Ty::Const(_) => t.clone(),
+            Ty::Const(_) | Ty::Never => t.clone(),
             Ty::Arrow(params, ret) => {
                 let new_params = params.iter().map(|p| self.apply(p)).collect();
                 Ty::arrow(new_params, self.apply(ret))

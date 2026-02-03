@@ -5,6 +5,9 @@ use clap::{Parser, ValueEnum};
 use strata_parse::parse_str;
 use strata_types::TypeChecker;
 
+/// Maximum source file size in bytes (1MB)
+const MAX_SOURCE_SIZE: usize = 1_000_000;
+
 #[derive(ValueEnum, Clone, Debug)]
 enum Format {
     Pretty,
@@ -30,6 +33,17 @@ struct Cli {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let src = std::fs::read_to_string(&cli.path)?;
+
+    // Security: Check input size limit
+    if src.len() > MAX_SOURCE_SIZE {
+        eprintln!(
+            "Error: source file exceeds {}MB limit ({} bytes)",
+            MAX_SOURCE_SIZE / 1_000_000,
+            src.len()
+        );
+        std::process::exit(1);
+    }
+
     let module = parse_str(&cli.path, &src)?;
 
     let mut type_checker = TypeChecker::new();

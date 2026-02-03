@@ -65,6 +65,12 @@ impl Unifier {
         let a = self.subst.apply(a);
         let b = self.subst.apply(b);
         match (a, b) {
+            // Never (bottom type) only unifies with itself.
+            // Divergence handling (e.g., if one branch returns) is done in inference,
+            // not unification. This prevents soundness holes where Never would allow
+            // mismatched types to unify (e.g., `if c { return 1; } else { "str" }`).
+            (Ty::Never, Ty::Never) => Ok(()),
+
             (Ty::Var(v), t) | (t, Ty::Var(v)) => self.unify_var(v, t),
             (Ty::Const(c1), Ty::Const(c2)) if c1 == c2 => Ok(()),
 
@@ -119,7 +125,7 @@ fn occurs_in(v: TypeVarId, ty: &Ty, subst: &Subst) -> bool {
     let ty = subst.apply(ty);
     match ty {
         Ty::Var(w) => w == v,
-        Ty::Const(_) => false,
+        Ty::Const(_) | Ty::Never => false,
         Ty::Arrow(ref params, ref ret) => {
             params.iter().any(|p| occurs_in(v, p, subst)) || occurs_in(v, ret, subst)
         }

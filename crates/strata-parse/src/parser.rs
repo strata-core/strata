@@ -6,6 +6,10 @@ use strata_ast::ast::{
 };
 use strata_ast::span::Span;
 
+/// Maximum nesting depth for blocks, ifs, whiles, and nested expressions.
+/// This prevents stack overflow from deeply nested input.
+const MAX_NESTING_DEPTH: u32 = 512;
+
 pub fn parse_str(_file: &str, src: &str) -> Result<Module> {
     let mut p = Parser::new(src);
     p.parse_module()
@@ -15,6 +19,8 @@ struct Parser<'a> {
     lex: Lexer<'a>,
     cur: Tok,
     nxt: Tok,
+    /// Current nesting depth for blocks/ifs/whiles/exprs
+    depth: u32,
 }
 
 impl<'a> Parser<'a> {
@@ -22,11 +28,41 @@ impl<'a> Parser<'a> {
         let mut lex = Lexer::new(src);
         let cur = lex.next_tok();
         let nxt = lex.next_tok();
-        Self { lex, cur, nxt }
+        Self {
+            lex,
+            cur,
+            nxt,
+            depth: 0,
+        }
+    }
+
+    /// Increment depth and check limit
+    fn enter_nesting(&mut self) -> Result<()> {
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            bail!(
+                "maximum nesting depth exceeded (limit: {})",
+                MAX_NESTING_DEPTH
+            );
+        }
+        Ok(())
+    }
+
+    /// Decrement depth
+    fn exit_nesting(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
     }
 
     fn bump(&mut self) {
         self.cur = std::mem::replace(&mut self.nxt, self.lex.next_tok());
+    }
+
+    /// Check if current token is a lexer error and surface it
+    fn check_lex_error(&self) -> Result<()> {
+        if let TokKind::Error(msg) = &self.cur.kind {
+            bail!("Lexer error at {:?}: {}", self.cur.span, msg);
+        }
+        Ok(())
     }
 
     fn at(&self, k: &TokKind) -> bool {
@@ -34,12 +70,22 @@ impl<'a> Parser<'a> {
     }
 
     fn expect(&mut self, k: TokKind) -> Result<Tok> {
+        // Surface lexer errors immediately with proper span
+        if let TokKind::Error(msg) = &self.cur.kind {
+            bail!("Lexer error at {:?}: {}", self.cur.span, msg);
+        }
+
         if self.at(&k) {
             let t = self.cur.clone();
             self.bump();
             Ok(t)
         } else {
-            bail!("expected {:?}, found {:?}", k, self.cur.kind)
+            bail!(
+                "expected {:?}, found {:?} at {:?}",
+                k,
+                self.cur.kind,
+                self.cur.span
+            )
         }
     }
 
@@ -49,6 +95,8 @@ impl<'a> Parser<'a> {
         let start = self.cur.span.start;
         let mut items = Vec::new();
         while !matches!(self.cur.kind, TokKind::Eof) {
+            // Surface any lexer errors immediately
+            self.check_lex_error()?;
             items.push(self.parse_item()?);
         }
         Ok(Module {
@@ -95,14 +143,14 @@ impl<'a> Parser<'a> {
         };
         self.expect(TokKind::Eq)?;
         let value = self.parse_expr_bp(0)?;
-        self.expect(TokKind::Semicolon)?;
+        let semi = self.expect(TokKind::Semicolon)?;
         Ok(LetDecl {
             name,
             ty,
             value,
             span: Span {
                 start,
-                end: self.cur.span.end,
+                end: semi.span.end,
             },
         })
     }
@@ -127,6 +175,7 @@ impl<'a> Parser<'a> {
 
         // Parse body block
         let body = self.parse_block()?;
+        let body_end = body.span.end;
 
         Ok(FnDecl {
             name,
@@ -135,7 +184,7 @@ impl<'a> Parser<'a> {
             body,
             span: Span {
                 start,
-                end: self.cur.span.end,
+                end: body_end,
             },
         })
     }
@@ -160,29 +209,36 @@ impl<'a> Parser<'a> {
             self.expect(TokKind::RParen)?;
             self.expect(TokKind::Arrow)?;
             let ret = Box::new(self.parse_type()?);
+            let ret_end = ret.span().end;
 
             return Ok(TypeExpr::Arrow {
                 params,
                 ret,
                 span: Span {
                     start,
-                    end: self.cur.span.end,
+                    end: ret_end,
                 },
             });
         }
 
-        // Otherwise, it's a simple path type: Int, Bool, etc.
-        let mut segs = Vec::new();
-        segs.push(self.parse_ident()?);
-        while let TokKind::Ident(_) = self.cur.kind {
+        // Otherwise, it's a simple path type: Int, Bool, Foo::Bar, etc.
+        // Grammar: Ident ('::' Ident)*
+        let mut segs = vec![self.parse_ident()?];
+
+        // Parse qualified path: Foo::Bar::Baz
+        while matches!(self.cur.kind, TokKind::ColonColon) {
+            self.bump(); // consume ::
             segs.push(self.parse_ident()?);
         }
+
+        // Use last segment's span end
+        let last_seg_end = segs.last().map(|s| s.span.end).unwrap_or(start);
 
         Ok(TypeExpr::Path(
             segs,
             Span {
                 start,
-                end: self.cur.span.end,
+                end: last_seg_end,
             },
         ))
     }
@@ -212,20 +268,19 @@ impl<'a> Parser<'a> {
         let name = self.parse_ident()?;
 
         // Optional type annotation: : Type
-        let ty = if matches!(self.cur.kind, TokKind::Colon) {
+        let (ty, end) = if matches!(self.cur.kind, TokKind::Colon) {
             self.bump(); // consume :
-            Some(self.parse_type()?)
+            let type_expr = self.parse_type()?;
+            let type_end = type_expr.span().end;
+            (Some(type_expr), type_end)
         } else {
-            None
+            (None, name.span.end)
         };
 
         Ok(Param {
             name,
             ty,
-            span: Span {
-                start,
-                end: self.cur.span.end,
-            },
+            span: Span { start, end },
         })
     }
 
@@ -233,6 +288,13 @@ impl<'a> Parser<'a> {
 
     /// Parse a block: `{ stmt* tail? }`
     fn parse_block(&mut self) -> Result<Block> {
+        self.enter_nesting()?;
+        let result = self.parse_block_inner();
+        self.exit_nesting();
+        result
+    }
+
+    fn parse_block_inner(&mut self) -> Result<Block> {
         let start = self.cur.span.start;
         self.expect(TokKind::LBrace)?;
 
@@ -270,10 +332,10 @@ impl<'a> Parser<'a> {
                         };
                         self.bump(); // consume '='
                         let value = self.parse_expr_bp(0)?;
-                        self.expect(TokKind::Semicolon)?;
+                        let semi = self.expect(TokKind::Semicolon)?;
                         let span = Span {
                             start: expr_span.start,
-                            end: self.cur.span.end,
+                            end: semi.span.end,
                         };
                         stmts.push(Stmt::Assign {
                             target,
@@ -282,10 +344,11 @@ impl<'a> Parser<'a> {
                         });
                     } else if matches!(self.cur.kind, TokKind::Semicolon) {
                         // Expression statement
+                        let semi_end = self.cur.span.end;
                         self.bump(); // consume ';'
                         let span = Span {
                             start: expr_span.start,
-                            end: self.cur.span.end,
+                            end: semi_end,
                         };
                         stmts.push(Stmt::Expr { expr, span });
                     } else if matches!(self.cur.kind, TokKind::RBrace) {
@@ -338,7 +401,7 @@ impl<'a> Parser<'a> {
 
         self.expect(TokKind::Eq)?;
         let value = self.parse_expr_bp(0)?;
-        self.expect(TokKind::Semicolon)?;
+        let semi = self.expect(TokKind::Semicolon)?;
 
         Ok(Stmt::Let {
             mutable,
@@ -347,7 +410,7 @@ impl<'a> Parser<'a> {
             value,
             span: Span {
                 start,
-                end: self.cur.span.end,
+                end: semi.span.end,
             },
         })
     }
@@ -364,13 +427,13 @@ impl<'a> Parser<'a> {
             Some(self.parse_expr_bp(0)?)
         };
 
-        self.expect(TokKind::Semicolon)?;
+        let semi = self.expect(TokKind::Semicolon)?;
 
         Ok(Stmt::Return {
             value,
             span: Span {
                 start,
-                end: self.cur.span.end,
+                end: semi.span.end,
             },
         })
     }
@@ -382,27 +445,31 @@ impl<'a> Parser<'a> {
 
         let cond = Box::new(self.parse_expr_bp(0)?);
         let then_ = self.parse_block()?;
+        let then_end = then_.span.end;
 
         // Check for else clause
-        let else_ = if matches!(self.cur.kind, TokKind::KwElse) {
+        let (else_, end) = if matches!(self.cur.kind, TokKind::KwElse) {
             self.bump(); // consume 'else'
 
             if matches!(self.cur.kind, TokKind::KwIf) {
-                // else if: parse as nested if expression
-                Some(Box::new(self.parse_if()?))
+                // else if: parse as nested if expression (with nesting guard)
+                self.enter_nesting()?;
+                let else_if = self.parse_if();
+                self.exit_nesting();
+                let else_if = else_if?;
+                let else_end = node_end(&else_if);
+                (Some(Box::new(else_if)), else_end)
             } else {
                 // else block
                 let else_block = self.parse_block()?;
-                Some(Box::new(Expr::Block(else_block)))
+                let else_end = else_block.span.end;
+                (Some(Box::new(Expr::Block(else_block))), else_end)
             }
         } else {
-            None
+            (None, then_end)
         };
 
-        let span = Span {
-            start,
-            end: self.cur.span.end,
-        };
+        let span = Span { start, end };
 
         Ok(Expr::If {
             cond,
@@ -419,10 +486,11 @@ impl<'a> Parser<'a> {
 
         let cond = Box::new(self.parse_expr_bp(0)?);
         let body = self.parse_block()?;
+        let body_end = body.span.end;
 
         let span = Span {
             start,
-            end: self.cur.span.end,
+            end: body_end,
         };
 
         Ok(Expr::While { cond, body, span })
@@ -464,10 +532,10 @@ impl<'a> Parser<'a> {
                 // call application (tightest)
                 TokKind::LParen => {
                     let start = node_start(&lhs);
-                    let args = self.parse_call_args()?;
+                    let (args, rparen_end) = self.parse_call_args()?;
                     let span = Span {
                         start,
-                        end: self.cur.span.end,
+                        end: rparen_end,
                     };
                     lhs = Expr::Call {
                         callee: Box::new(lhs),
@@ -507,8 +575,10 @@ impl<'a> Parser<'a> {
         match tok_kind {
             // unary prefix
             TokKind::Bang => {
+                self.enter_nesting()?;
                 self.bump();
                 let inner = self.parse_expr_bp(100)?;
+                self.exit_nesting();
                 let span = Span {
                     start: tok_span.start,
                     end: node_end(&inner),
@@ -520,8 +590,10 @@ impl<'a> Parser<'a> {
                 })
             }
             TokKind::Minus => {
+                self.enter_nesting()?;
                 self.bump();
                 let inner = self.parse_expr_bp(100)?;
+                self.exit_nesting();
                 let span = Span {
                     start: tok_span.start,
                     end: node_end(&inner),
@@ -565,10 +637,12 @@ impl<'a> Parser<'a> {
             }
 
             TokKind::LParen => {
+                self.enter_nesting()?;
                 let start = tok_span.start;
                 self.bump(); // '('
                 let inner = self.parse_expr_bp(0)?;
                 let end_tok = self.expect(TokKind::RParen)?;
+                self.exit_nesting();
                 Ok(Expr::Paren {
                     inner: Box::new(inner),
                     span: Span {
@@ -585,16 +659,30 @@ impl<'a> Parser<'a> {
             }
 
             // If expression
-            TokKind::KwIf => self.parse_if(),
+            TokKind::KwIf => {
+                self.enter_nesting()?;
+                let e = self.parse_if();
+                self.exit_nesting();
+                e
+            }
 
             // While loop
-            TokKind::KwWhile => self.parse_while(),
+            TokKind::KwWhile => {
+                self.enter_nesting()?;
+                let e = self.parse_while();
+                self.exit_nesting();
+                e
+            }
+
+            // Lexer error - surface it with proper context
+            TokKind::Error(msg) => bail!("Lexer error at {:?}: {}", self.cur.span, msg),
 
             _ => bail!("unexpected token in expression: {:?}", tok_kind),
         }
     }
 
-    fn parse_call_args(&mut self) -> Result<Vec<Expr>> {
+    /// Parse call arguments and return (args, closing_paren_span_end)
+    fn parse_call_args(&mut self) -> Result<(Vec<Expr>, u32)> {
         self.expect(TokKind::LParen)?; // we are at '('
         let mut args = Vec::new();
         if !matches!(self.cur.kind, TokKind::RParen) {
@@ -607,8 +695,8 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        self.expect(TokKind::RParen)?;
-        Ok(args)
+        let rparen = self.expect(TokKind::RParen)?;
+        Ok((args, rparen.span.end))
     }
 }
 

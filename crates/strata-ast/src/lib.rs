@@ -65,6 +65,16 @@ pub mod ast {
         },
     }
 
+    impl TypeExpr {
+        /// Get the span of this type expression
+        pub fn span(&self) -> Span {
+            match self {
+                TypeExpr::Path(_, span) => *span,
+                TypeExpr::Arrow { span, .. } => *span,
+            }
+        }
+    }
+
     /// Statement within a block
     #[derive(Debug, Clone, Serialize)]
     pub enum Stmt {
@@ -139,18 +149,38 @@ pub mod ast {
         },
     }
 
+    impl Expr {
+        /// Get the span of this expression
+        pub fn span(&self) -> Span {
+            match self {
+                Expr::Lit(_, span) => *span,
+                Expr::Var(ident) => ident.span,
+                Expr::Unary { span, .. } => *span,
+                Expr::Call { span, .. } => *span,
+                Expr::Binary { span, .. } => *span,
+                Expr::Paren { span, .. } => *span,
+                Expr::Block(block) => block.span,
+                Expr::If { span, .. } => *span,
+                Expr::While { span, .. } => *span,
+            }
+        }
+    }
+
     #[derive(Debug, Clone, Copy, Serialize)]
     pub enum UnOp {
         Not,
         Neg,
     }
 
+    /// Literal values in the source code
     #[derive(Debug, Clone, Serialize)]
     pub enum Lit {
         Int(i64),
         Float(f64),
         Str(String),
         Bool(bool),
+        /// The `nil` literal, which has type `Unit`.
+        /// Note: `Nil` is the AST representation; in the type system this becomes `Ty::Const(TyConst::Unit)`.
         Nil,
     }
 

@@ -12,6 +12,9 @@ use std::collections::{HashMap, HashSet};
 use strata_ast::ast::{BinOp, Block, Expr, Lit, Stmt, UnOp};
 use strata_ast::span::Span;
 
+/// Maximum inference depth to prevent stack overflow from pathological input
+const MAX_INFER_DEPTH: u32 = 512;
+
 /// Errors that can occur during type inference
 #[derive(Debug, Clone)]
 pub enum InferError {
@@ -21,6 +24,8 @@ pub enum InferError {
     ImmutableAssignment { name: String, span: Span },
     /// Feature not yet implemented
     NotImplemented { msg: String, span: Span },
+    /// Inference depth limit exceeded (pathological input)
+    DepthLimitExceeded { span: Span },
 }
 
 /// Context for type checking within a scope
@@ -89,6 +94,8 @@ pub struct InferCtx {
     fresh_counter: u32,
     /// Collected constraints
     constraints: Vec<Constraint>,
+    /// Current inference depth (for recursion limit)
+    depth: u32,
 }
 
 impl InferCtx {
@@ -97,7 +104,23 @@ impl InferCtx {
         InferCtx {
             fresh_counter: 0,
             constraints: vec![],
+            depth: 0,
         }
+    }
+
+    /// Enter a new level of inference depth
+    fn enter_depth(&mut self, span: Span) -> Result<(), InferError> {
+        self.depth += 1;
+        if self.depth > MAX_INFER_DEPTH {
+            Err(InferError::DepthLimitExceeded { span })
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Exit a level of inference depth
+    fn exit_depth(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
     }
 
     /// Generate a fresh type variable
@@ -154,6 +177,16 @@ impl InferCtx {
     ///
     /// `ctx` provides the type environment, mutability tracking, and expected return type
     pub fn infer_expr_ctx(&mut self, ctx: &CheckContext, expr: &Expr) -> Result<Ty, InferError> {
+        // Track depth to prevent stack overflow from deeply nested expressions
+        let span = expr.span();
+        self.enter_depth(span)?;
+        let result = self.infer_expr_inner(ctx, expr);
+        self.exit_depth();
+        result
+    }
+
+    /// Inner implementation of expression inference
+    fn infer_expr_inner(&mut self, ctx: &CheckContext, expr: &Expr) -> Result<Ty, InferError> {
         match expr {
             // Literals have known types
             Expr::Lit(lit, _) => Ok(self.infer_lit(lit)),
@@ -224,7 +257,7 @@ impl InferCtx {
 
     /// Infer the type of a block expression
     ///
-    /// Block type = tail expression type, or Unit if no tail
+    /// Block type = tail expression type, or Unit if no tail (or Never if it diverges)
     pub fn infer_block(&mut self, ctx: &CheckContext, block: &Block) -> Result<Ty, InferError> {
         // Create a child context for this block scope
         let mut block_ctx = ctx.child();
@@ -235,8 +268,16 @@ impl InferCtx {
         }
 
         // Block type = tail expression type, or Unit if no tail
+        // Special case: if the last statement is a return, the block type is Never
         if let Some(ref tail) = block.tail {
             self.infer_expr_ctx(&block_ctx, tail)
+        } else if block
+            .stmts
+            .last()
+            .is_some_and(|s| matches!(s, Stmt::Return { .. }))
+        {
+            // Block ends with return statement - it always diverges
+            Ok(Ty::Never)
         } else {
             Ok(Ty::unit())
         }
@@ -261,12 +302,23 @@ impl InferCtx {
 
                 // If there's a type annotation, add constraint
                 if let Some(ann_ty) = ty {
-                    if let Ok(expected) = ty_from_type_expr(ann_ty) {
-                        self.add_constraint(Constraint::Equal(value_ty.clone(), expected, *span));
-                    }
+                    let expected = ty_from_type_expr(ann_ty)?;
+                    self.add_constraint(Constraint::Equal(value_ty.clone(), expected, *span));
                 }
 
-                // Add binding to context (monomorphic for now)
+                // Add binding to context as MONOMORPHIC.
+                //
+                // Design decision: Block-level let bindings are not generalized because:
+                // 1. Simplicity: Generalizing requires solving constraints first, which
+                //    complicates the single-pass inference within blocks.
+                // 2. Safety: Premature generalization can lead to unsoundness when the
+                //    value contains type variables that escape to outer scope.
+                // 3. Practicality: Most local bindings don't need polymorphism.
+                //
+                // For polymorphic local values, users can define a nested function:
+                //   let id = fn(x) { x }; // id is polymorphic as a fn decl
+                //   let x = id(1);        // x: Int
+                //   let y = id(true);     // y: Bool
                 ctx.bind(name.text.clone(), Scheme::mono(value_ty), *mutable);
 
                 Ok(())
@@ -349,14 +401,26 @@ impl InferCtx {
             // Infer else-branch type
             let else_ty = self.infer_expr_ctx(ctx, else_expr)?;
 
-            // Both branches must unify
-            self.add_constraint(Constraint::Equal(then_ty.clone(), else_ty, span));
-
-            Ok(then_ty)
+            // Handle Never (diverging branches) specially:
+            // - If then diverges, result type is else type
+            // - If else diverges, result type is then type
+            // - If both diverge, result is Never
+            // - Otherwise, both must unify
+            match (&then_ty, &else_ty) {
+                (Ty::Never, Ty::Never) => Ok(Ty::Never),
+                (Ty::Never, _) => Ok(else_ty), // then diverges, use else type
+                (_, Ty::Never) => Ok(then_ty), // else diverges, use then type
+                _ => {
+                    // Neither diverges: must unify
+                    self.add_constraint(Constraint::Equal(then_ty.clone(), else_ty, span));
+                    Ok(then_ty)
+                }
+            }
         } else {
-            // No else: then-branch must be Unit
-            self.add_constraint(Constraint::Equal(then_ty, Ty::unit(), span));
-
+            // No else: then-branch must be Unit (unless it diverges)
+            if then_ty != Ty::Never {
+                self.add_constraint(Constraint::Equal(then_ty, Ty::unit(), span));
+            }
             Ok(Ty::unit())
         }
     }
@@ -593,5 +657,50 @@ mod tests {
 
         let constraints = ctx.take_constraints();
         assert_eq!(constraints.len(), 2); // Two constraints: lhs = Int, rhs = Int
+    }
+
+    #[test]
+    fn depth_limit_triggers_on_deeply_nested_expr() {
+        let mut ctx = InferCtx::new();
+        let env = HashMap::new();
+
+        // Create a deeply nested unary expression: !!!!!...!true (600 levels)
+        let mut expr = Expr::Lit(Lit::Bool(true), Span { start: 0, end: 4 });
+        for i in 0..600 {
+            expr = Expr::Unary {
+                op: strata_ast::ast::UnOp::Not,
+                expr: Box::new(expr),
+                span: Span {
+                    start: i,
+                    end: i + 1,
+                },
+            };
+        }
+
+        let result = ctx.infer_expr(&env, &expr);
+        assert!(matches!(result, Err(InferError::DepthLimitExceeded { .. })));
+    }
+
+    #[test]
+    fn normal_nesting_works() {
+        let mut ctx = InferCtx::new();
+        let env = HashMap::new();
+
+        // Create moderately nested unary expression: !!!!!...!true (100 levels)
+        let mut expr = Expr::Lit(Lit::Bool(true), Span { start: 0, end: 4 });
+        for i in 0..100 {
+            expr = Expr::Unary {
+                op: strata_ast::ast::UnOp::Not,
+                expr: Box::new(expr),
+                span: Span {
+                    start: i,
+                    end: i + 1,
+                },
+            };
+        }
+
+        let result = ctx.infer_expr(&env, &expr);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Ty::bool_());
     }
 }

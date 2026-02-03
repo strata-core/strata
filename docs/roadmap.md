@@ -1,8 +1,8 @@
 # Strata Roadmap
 
-**Last Updated:** February 1, 2026  
-**Current Version:** v0.0.5 (Issue 005 complete, ready to merge)  
-**Target v0.1:** November 2026 - February 2027
+**Last Updated:** January 31, 2026  
+**Current Version:** v0.0.4 (Issue 005 in progress)  
+**Target v0.1:** November 2026 - February 2027 (10-14 months)
 
 This document describes the planned roadmap for Strata, organized by development phases. It reflects strategic decisions made in January 2026 to focus on a **minimal, shippable v0.1** that proves core value propositions.
 
@@ -12,7 +12,7 @@ This document describes the planned roadmap for Strata, organized by development
 
 - [Strategic Focus](#strategic-focus-for-v01)
 - [Phase 2: Type System](#phase-2-type-system-foundations-current) (Current)
-- [Phase 3: Effect System](#phase-3-effect-system-strata-differentiator)
+- [Phase 3: Effect System](#phase-3-effect-system-your-differentiator)
 - [Phase 4: Runtime](#phase-4-minimal-viable-runtime)
 - [Phase 5: Hardening & Launch](#phase-5-hardening--launch)
 - [Deferred Features](#explicitly-deferred-to-v02)
@@ -34,7 +34,6 @@ This document describes the planned roadmap for Strata, organized by development
 **Killer Demos:** See [`KILLER_DEMOS.md`](KILLER_DEMOS.md)
 1. Safe model deployment script
 2. AI-powered incident response workflow
-3. Multi-LLM software orchestrator (meta-demo: building agents with Strata)
 
 **v0.1 Success Metric:** An automation engineer can write a production deployment script in Strata that is safer, more auditable, and easier to debug than Python/Bash equivalents.
 
@@ -43,29 +42,7 @@ This document describes the planned roadmap for Strata, organized by development
 ## Important Notes
 
 ### Timeline Reconciliation
-
-**Actual velocity data (as of Feb 2026):**
-- v0.0.1 to v0.0.5: ~2 months of focused work (Dec-Jan break excluded)
-- Shipped: Complete lexer/parser, type inference, function system, soundness hardening
-- Velocity: ~2.5 issues per month when focused
-
-**Projected timeline with Claude Code acceleration:**
-```
-Actual work time to v0.0.5: ~2 months
-├─ Phase 2 remaining (006-007): +2 months → Month 4 (Apr 2026)
-├─ Phase 3 (008-010): +2-3 months → Month 6-7 (Jul 2026)
-├─ Phase 4 (Runtime + stdlib): +2-3 months → Month 9-10 (Oct 2026)
-└─ Phase 5 (Hardening + launch): +2-3 months → Month 12 (Dec 2026)
-
-RESULT: v0.1 launch feasible by December 2026 - February 2027
-```
-
-**Update (Feb 2026):** Phase 2 is tracking ahead of schedule. Issue 005 + 005-b completed in ~3 weeks of work. On track for Phase 2 completion by early April 2026.
-
-**Confidence level for 12-15 month timeline:** Very high
-- Demonstrated velocity supports estimate
-- Claude Code will accelerate implementation grind
-- Foundation is sound (post-005-b hardening)
+External feedback suggests Phase 2-3 (type system + effects) is achievable in 3-6 months. Our 10-14 month timeline includes Phase 4-5 (runtime, stdlib, tooling, docs, killer demos) which represents the additional effort to ship a production-ready v0.1.
 
 ### Standard Library Phasing
 - **Issues 005-007:** Pure functions only (no I/O)
@@ -77,48 +54,40 @@ This sequencing ensures the effect system is complete before we add effectful op
 ### Current Evaluator Status
 The evaluator (`eval.rs`) is a temporary smoke-test tool for validating type checker output. It has known limitations (no closures, no real I/O, limited error handling). This is intentional - it will be replaced by WASM compilation in Phase 4.
 
+### Performance Philosophy
+Performance optimization is explicitly **deferred to v0.2+**. v0.1 prioritizes correctness, safety, and usability over speed.
+
+**Why performance is not a v0.1 concern:**
+- Target users (automation engineers) care about safety and audit trails, not microsecond optimizations
+- Automation scripts are I/O-bound (network, disk, AI APIs), not CPU-bound
+- Variable lookup overhead is noise compared to HTTP request latency
+- Premature optimization would delay shipping and add complexity
+
+**Exception:** Effect tracing is designed to be toggleable (see Phase 4.2) to avoid overhead when not needed, but tracing is **enabled by default** since audit trails are Strata's core value proposition.
+
+**When to optimize:** After v0.1 ships, after profiling real-world usage, if users report performance issues.
+
 ---
 
 ## Phase 2: Type System Foundations (Current)
 
 **Timeline:** Months 1-4 (Jan 2026 - Apr 2026)  
-**Focus:** Get the type system solid before tackling effects  
-**Status:** ~40% complete (Issue 005 done, Issues 006-007 remaining)
+**Focus:** Get the type system solid before tackling effects
 
-### Issue 005: Functions & Inference ✅ COMPLETE
-**Completed:** February 1, 2026
+### Issue 005: Functions & Inference (IN PROGRESS)
+**Status:** ~40% complete  
+**Remaining work:**
+- Constraint-based type inference (Algorithm W)
+- Function definitions with type signatures
+- Function calls with type checking
+- Generalization/instantiation (let-polymorphism)
+- Higher-order functions
 
-**What shipped:**
-- Constraint-based type inference (generation + solving separation)
-- InferCtx for fresh variables and constraint collection
-- Solver for constraint solving via unification
-- Generalization (∀ introduction) and instantiation (∀ elimination)
-- Function declarations with multi-param arrows: `fn add(x: Int, y: Int) -> Int`
-- Function call type checking with full inference
-- Polymorphic type schemes (let-polymorphism)
-- Higher-order function support
-- Two-pass module checking (forward references work!)
-- 15 comprehensive tests (10 positive + 5 negative)
-- Working CLI examples (add.strata, type_error.strata)
-- 49 total tests across workspace (all passing)
-
-**Soundness hardening (Phase 8 / 005-b) - ALL COMPLETE:**
-1. ✅ Unknown identifiers now error (not fresh vars)
-2. ✅ Real error messages (no placeholder "Unit vs Unit")
-3. ✅ Correct generalization (compute env free vars)
-4. ✅ Numeric constraints (arithmetic requires Int)
-5. ✅ Two-pass module checking (forward refs work)
-6. ✅ Minimal provenance (constraints track spans)
-7. ✅ Determinism audit - PASS (no flaky CI)
-
-**Key learnings:**
-- Constraint-based approach cleaner than Algorithm W (better extensibility)
-- Phase-based development worked excellently
-- Post-completion soundness review essential
-- Foundation must be trustworthy before building on it
+**Estimated completion:** Mid-February 2026
 
 ### Issue 006: Blocks & Control Flow
-**Status:** Next up (starting early Feb 2026)  
+**Status:** Planned  
+**Estimated time:** 1-2 weeks  
 **Scope:**
 - Block expressions: `{ stmt; stmt; expr }`
 - If/else expressions (branches must unify)
@@ -130,6 +99,7 @@ The evaluator (`eval.rs`) is a temporary smoke-test tool for validating type che
 
 ### Issue 007: ADTs & Pattern Matching
 **Status:** Planned  
+**Estimated time:** 2-3 weeks  
 **Scope:**
 - Struct definitions
 - Enum definitions with variants
@@ -149,17 +119,16 @@ The evaluator (`eval.rs`) is a temporary smoke-test tool for validating type che
 - Default methods
 - Trait bounds in where clauses (beyond simple bounds)
 
-**Estimated Phase 2 completion:** Early April 2026 (on track!)
-
 ---
 
-## Phase 3: Effect System (Strata Differentiator)
+## Phase 3: Effect System (Your Differentiator)
 
 **Timeline:** Months 5-7 (May 2026 - Jul 2026)  
 **Focus:** Effects and capabilities - this is what makes Strata unique
 
 ### Issue 008: Effect Syntax & Checking
 **Status:** Planned  
+**Estimated time:** 2-3 weeks  
 
 **Note on Elaboration:**  
 Issues 005 (constraint solving) and 008 (effect checking) together form the elaboration phase: converting inferred types (Ty with variables) to surface types (Type with effect rows).
@@ -189,6 +158,7 @@ fn deploy(path: String, using fs: FsCap, using net: NetCap)
 
 ### Issue 009: Capability Types
 **Status:** Planned  
+**Estimated time:** 1 week  
 **Scope:**
 - Standard capability types: `NetCap`, `FsCap`, `TimeCap`, `RandCap`, `AiCap`
 - Compiler enforces: to use effect, must have capability in scope
@@ -210,6 +180,7 @@ fn good(using net: NetCap) -> String & {Net} {
 
 ### Issue 010: Profile Enforcement
 **Status:** Planned  
+**Estimated time:** 1 week  
 **Scope:**
 - Parse `@profile(Kernel|Realtime|General)` annotations
 - Profile checking pass:
@@ -242,6 +213,7 @@ fn bad_kernel(using net: NetCap) -> u32 & {Net} {
 **Focus:** Get the killer demos working end-to-end
 
 ### 4.1: Standard Library (Minimal)
+**Estimated time:** 2-3 weeks  
 **Scope:**
 - Core types: `Result<T, E>`, `Option<T>`
 - Primitives: String, Int, Float, Bool
@@ -260,12 +232,34 @@ fn bad_kernel(using net: NetCap) -> u32 & {Net} {
 - Advanced HTTP (streaming, etc.)
 
 ### 4.2: Effect Tracing Runtime
+**Estimated time:** 1-2 weeks  
 **Scope:**
 - Intercept all effectful operations
 - Log to structured trace (JSON)
 - Trace format: timestamp, effect type, parameters, result
 - Seedable RNG and Time (for determinism)
 - CLI flag: `--trace output.json`
+
+**Design consideration: Toggleable tracing for performance**
+
+Effect tracing should be optional to avoid overhead in performance-critical scenarios:
+
+```bash
+# Default: Tracing enabled (audit trails are the value proposition)
+strata run deploy.strata --trace trace.json
+
+# Optional: Disable tracing for performance
+strata run deploy.strata --no-trace
+
+# Replay always works on captured traces
+strata replay trace.json
+```
+
+**Implementation approach:**
+- Tracing enabled by default (audit trails are Strata's differentiator)
+- `--no-trace` flag disables trace generation for performance
+- Conditional execution: trace code only runs when enabled
+- Future optimization: compile-time elimination when provably not needed
 
 **Example trace output:**
 ```json
@@ -297,6 +291,7 @@ fn bad_kernel(using net: NetCap) -> u32 & {Net} {
 - Proves the replay concept without full VM complexity
 
 ### 4.4: WASM Compilation Target (Basic)
+**Estimated time:** 2-3 weeks  
 **Scope:**
 - Compile Strata → WASM (via wasm-encoder or LLVM)
 - Basic runtime support (no WASI yet, just compute)
@@ -439,15 +434,10 @@ actor Worker {
 | Phase 5 (Hardening) | 3-4 months | Dec 2026 - Feb 2027 | v0.1 release |
 | **Total** | **10-14 months** | **Feb 2027** | **Strata v0.1** |
 
-**Confidence level:** High (based on actual Issue 004-005 velocity)
-
-**Updated assessment (Feb 2026):**
-- Issue 005 completed on schedule
-- Phase 2 tracking ahead of estimates
-- On track for early April 2026 Phase 2 completion
+**Confidence level:** Medium-high (based on actual Issue 004 velocity)
 
 **Risk factors:**
-- ADT implementation (Issue 007 - most complex Phase 2 issue)
+- Type inference complexity (Issue 005 could take longer)
 - Effect system interactions (Issues 008-010 may reveal edge cases)
 - WASM compilation challenges (Phase 4 is less predictable)
 
@@ -524,4 +514,5 @@ actor Worker {
 
 - **[KILLER_DEMOS.md](KILLER_DEMOS.md)** - Detailed v0.1 demo scenarios
 - **[IN_PROGRESS.md](IN_PROGRESS.md)** - Current work and status
+- **[005-functions-inference-roadmap.md](../issues/005-functions-inference-roadmap.md)** - Detailed strategic timeline with risk management
 - **[IMPLEMENTED.md](IMPLEMENTED.md)** - What actually works right now
