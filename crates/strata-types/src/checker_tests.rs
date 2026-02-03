@@ -25,16 +25,8 @@ fn ty_int() -> TypeExpr {
     TypeExpr::Path(vec![ident("Int")], sp())
 }
 
-fn ty_float() -> TypeExpr {
-    TypeExpr::Path(vec![ident("Float")], sp())
-}
-
 fn ty_bool() -> TypeExpr {
     TypeExpr::Path(vec![ident("Bool")], sp())
-}
-
-fn ty_string() -> TypeExpr {
-    TypeExpr::Path(vec![ident("String")], sp())
 }
 
 // ============================================================================
@@ -52,7 +44,7 @@ fn test_literal_int() {
 #[test]
 fn test_literal_float() {
     let mut tc = TypeChecker::new();
-    let expr = Expr::Lit(Lit::Float(3.14), sp());
+    let expr = Expr::Lit(Lit::Float(3.5), sp());
     let ty = tc.infer_expr(&expr).unwrap();
     assert_eq!(ty, crate::infer::ty::Ty::float());
 }
@@ -178,7 +170,7 @@ fn test_unary_neg_float_not_yet_supported() {
     let mut tc = TypeChecker::new();
     let expr = Expr::Unary {
         op: UnOp::Neg,
-        expr: Box::new(Expr::Lit(Lit::Float(3.14), sp())),
+        expr: Box::new(Expr::Lit(Lit::Float(3.5), sp())),
         span: sp(),
     };
     let result = tc.infer_expr(&expr);

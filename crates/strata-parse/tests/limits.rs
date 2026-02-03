@@ -18,7 +18,7 @@ fn test_parser_nesting_depth_works() {
     for _ in 0..50 {
         src.push_str("{ ");
     }
-    src.push_str("1");
+    src.push('1');
     for _ in 0..50 {
         src.push_str(" }");
     }
