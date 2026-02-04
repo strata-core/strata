@@ -1,8 +1,8 @@
 # Strata Roadmap
 
 **Last Updated:** February 3, 2026  
-**Current Version:** v0.0.7.0 (Issue 007 design review)  
-**Target v0.1:** November 2026 - February 2027 (10-14 months)
+**Current Version:** v0.0.7.0  
+**Target v0.1:** November 2026 - February 2027 (10-14 months from project start)
 
 This document describes the planned roadmap for Strata, organized by development phases. It reflects strategic decisions made in January 2026 to focus on a **minimal, shippable v0.1** that proves core value propositions.
 
@@ -11,8 +11,8 @@ This document describes the planned roadmap for Strata, organized by development
 ## Quick Navigation
 
 - [Strategic Focus](#strategic-focus-for-v01)
-- [Phase 2: Type System](#phase-2-type-system-foundations-current) (Current)
-- [Phase 3: Effect System](#phase-3-effect-system-your-differentiator)
+- [Phase 2: Type System](#phase-2-type-system-foundations-mostly-complete) (Mostly Complete ✅)
+- [Phase 3: Effect System](#phase-3-effect-system-your-differentiator) (Next)
 - [Phase 4: Runtime](#phase-4-minimal-viable-runtime)
 - [Phase 5: Hardening & Launch](#phase-5-hardening--launch)
 - [Deferred Features](#explicitly-deferred-to-v02)
@@ -52,7 +52,7 @@ External feedback suggests Phase 2-3 (type system + effects) is achievable in 3-
 This sequencing ensures the effect system is complete before we add effectful operations to the standard library.
 
 ### Current Evaluator Status
-The evaluator (`eval.rs`) is a temporary smoke-test tool for validating type checker output. It has known limitations (no closures, no real I/O, limited error handling). This is intentional - it will be replaced by WASM compilation in Phase 4.
+The evaluator (`eval.rs`) is a temporary smoke-test tool for validating type checker output. It has known limitations (no closures yet, no real I/O, limited error handling). This is intentional - it will be replaced by WASM compilation in Phase 4.
 
 ### Performance Philosophy
 Performance optimization is explicitly **deferred to v0.2+**. v0.1 prioritizes correctness, safety, and usability over speed.
@@ -67,167 +67,275 @@ Performance optimization is explicitly **deferred to v0.2+**. v0.1 prioritizes c
 
 **When to optimize:** After v0.1 ships, after profiling real-world usage, if users report performance issues.
 
+### Design Philosophy
+Strata balances five equally important concerns: type soundness, operational reality, human factors, security, and maintainability. This "anti-single-axis" approach means features are judged by their worst-case behavior, not best-case elegance.
+
+**Key principles:**
+- Power must be visible (explicit capabilities and effects)
+- Failure story before success story (all features define error behavior)
+- Inference reduces syntax, never meaning (humans can read code)
+- Governed, not forbidden (dangerous operations are tracked, not eliminated)
+
+See [`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md) for complete design philosophy and technical decisions.
+
 ---
 
-## Phase 2: Type System Foundations (Current)
+## Phase 1: Foundation (Complete ✅)
+
+**Timeline:** Months 0-1 (Nov 2025 - Dec 2025)  
+**Status:** COMPLETE
+
+### Issue 001: Parser + AST ✅
+- Full lexer with all token types
+- Expression parser with correct precedence
+- Declaration parser (let bindings)
+- Clean AST representation
+- 13+ parser tests
+
+### Issue 002: Effects & Profiles ✅
+- Effect enum: Net, FS, Time, Rand, Fail
+- EffectRow as canonical set
+- Profile enum: Kernel, Realtime, General
+- Set operations for effects
+
+### Issue 003: Type Inference Scaffolding ✅
+- Inference types (Ty) with type variables
+- Full unification algorithm with occurs check
+- Substitution with composition
+- Type error reporting
+- 11 unification tests
+
+### Issue 004: Basic Type Checking ✅
+- Expression type inference
+- Type environment for let bindings
+- Variable lookup and scoping
+- Type annotations with verification
+- 34 type checker tests
+
+**Phase 1 Result:** Solid foundation with parser, AST, basic type system, and effect types.
+
+---
+
+## Phase 2: Type System Foundations (Mostly Complete ✅)
 
 **Timeline:** Months 1-4 (Jan 2026 - Apr 2026)  
-**Focus:** Get the type system solid before tackling effects
+**Status:** Issues 005-006 COMPLETE, Issue 007 in progress
 
-### Issue 005: Functions & Inference ✅ COMPLETE
-**Completed:** February 1, 2026
+### Issue 005: Functions & Inference ✅
+**Status:** COMPLETE (Feb 1, 2026)
 
 **What was built:**
-- Constraint-based type inference (Algorithm W style)
-- Function definitions with type signatures
+- Constraint-based type inference
+- Function definitions with multi-parameter arrows
 - Function calls with type checking
 - Generalization/instantiation (let-polymorphism)
 - Higher-order functions
 - Two-pass module checking (forward references, mutual recursion)
-- Soundness hardening (Issue 005-b): 7 critical fixes
 
-**Test coverage:** 49 tests
+**Example working code:**
+```strata
+fn add(x: Int, y: Int) -> Int { x + y }
+fn double(n: Int) -> Int { add(n, n) }
 
-### Issue 006: Blocks & Control Flow ✅ COMPLETE
-**Completed:** February 2, 2026
+// Polymorphic identity
+fn identity(x) { x }
+let a = identity(42);    // Int
+let b = identity(true);  // Bool
+```
+
+### Issue 005-b: Soundness Hardening ✅
+**Status:** COMPLETE (Feb 1, 2026)
+
+**What was fixed:**
+1. Unknown identifiers now error properly
+2. Real unification errors (no placeholders)
+3. Correct generalization boundaries
+4. Numeric constraints on arithmetic
+5. Two-pass module checking
+6. Minimal constraint provenance
+7. Determinism audit
+
+**Test coverage:** 49 tests after soundness review
+
+### Issue 006: Blocks & Control Flow ✅
+**Status:** COMPLETE (Feb 2, 2026)
 
 **What was built:**
-- Block expressions: `{ stmt; stmt; expr }`
+- Block expressions with tail/semicolon semantics
 - If/else expressions (branches must unify)
-- While loops
-- Return statements
-- Mutable let bindings (simple, no borrow checking)
-- `Ty::Never` with correct bottom semantics
-- Closures with captured environments
-- Mutual recursion support
+- While loops with proper control flow
+- Return statements with propagation
+- Mutable let bindings (`let mut x = ...`)
+- Assignment statements respecting mutability
+- Scope stack evaluator with lexical scoping
+- Ty::Never (bottom type) for diverging expressions
 
-**Security Hardening (006-Hardening):**
-- DoS protection: nesting (512), call depth (1000), tokens (200K), inference (512), source (1MB)
-- Soundness: Never type only unifies with itself
-- Removed panic!/expect() from checker
+**Example working code:**
+```strata
+fn max(a: Int, b: Int) -> Int {
+    if a > b { a } else { b }
+}
 
-**Test coverage:** 163 tests (84 new + 30 hardening)
+fn factorial(n: Int) -> Int {
+    if n <= 1 { 1 } else { n * factorial(n - 1) }
+}
 
-### Issue 007: ADTs & Pattern Matching ← CURRENT
+fn sum_to(n: Int) -> Int {
+    let mut total = 0;
+    let mut i = 1;
+    while i <= n {
+        total = total + i;
+        i = i + 1;
+    };
+    total
+}
+```
+
+### Issue 006-Hardening: Security & Soundness ✅
+**Status:** COMPLETE (Feb 2-3, 2026)
+
+**DoS Protection:**
+| Limit | Value | Purpose |
+|-------|-------|---------|
+| Source size | 1 MB | Prevent memory exhaustion |
+| Token count | 200,000 | Bound lexer work |
+| Parser nesting | 512 | Prevent stack overflow |
+| Inference depth | 512 | Bound type inference recursion |
+| Eval call depth | 1,000 | Prevent runaway recursion |
+
+**Soundness Fixes:**
+- `Ty::Never` only unifies with itself (not a wildcard)
+- Divergence handled correctly in if/else and block inference
+- Removed panic!/expect() from type checker
+- Token limit latching
+- Scope guard for guaranteed pop_scope()
+
+**Parser Improvements:**
+- `::` qualified type paths
+- Span-end fixes
+- Universal lexer error surfacing
+- Nesting guards for if/while/else-if
+
+**Test stats:** 163 tests passing (30 new hardening tests)
+
+### Issue 007: ADTs & Pattern Matching (IN PROGRESS)
 **Status:** Design review in progress  
-**Estimated time:** 10-14 days  
+**Estimated time:** 10-14 days
+
 **Scope:**
+```strata
+struct Point { x: Int, y: Int }
+
+enum Option<T> {
+    Some(T),
+    None,
+}
+
+fn unwrap_or<T>(opt: Option<T>, default: T) -> T {
+    match opt {
+        Some(x) => x,
+        None => default,
+    }
+}
+```
+
+**What will be built:**
 - Struct definitions
 - Enum definitions with variants
-- Generic type parameters (e.g., `Option<T>`, `Result<T, E>`)
-- Match expressions with exhaustiveness checking
-- Pattern matching (literals, variables, constructors)
+- Generic type parameters
+- Match expressions
+- Pattern matching (literals, vars, constructors)
+- Exhaustiveness checking (Maranget algorithm)
 
-**Key decisions under review:**
-- Nested patterns (rec: yes)
-- Match guards (rec: defer)
-- Tuple types (rec: defer)
-- Variant syntax (rec: all three — unit, tuple, struct)
-- Struct update syntax (rec: defer)
-- Visibility modifiers (rec: defer)
+**Critical soundness concerns being reviewed:**
+1. Constructor variance (constructors as polymorphic functions)
+2. Pattern scoping (mutability tracking in match arms)
+3. Exhaustiveness + Never (match type = join of non-Never arms)
+4. Redundant patterns (dead arms as security risk)
 
-**Soundness concerns (from Gemini):**
-1. Constructor variance — constructors as polymorphic functions
-2. Pattern scoping — mutability tracking per-arm
-3. Exhaustiveness + Never — match type = join of non-Never arms
-4. Redundant patterns — dead arms as security risk
+**Current activity:** Design review
 
-**Deferred to v0.2:**
-- Associated types in traits
-- Default methods
-- Trait bounds in where clauses (beyond simple bounds)
+**Estimated completion:** Mid-February 2026
+
+**Phase 2 Result:** Complete type system with HM inference, polymorphism, ADTs, and pattern matching.
 
 ---
 
 ## Phase 3: Effect System (Your Differentiator)
 
-**Timeline:** Months 5-7 (May 2026 - Jul 2026)  
-**Focus:** Effects and capabilities - this is what makes Strata unique
+**Timeline:** Months 4-7 (Apr 2026 - Jul 2026)  
+**Focus:** Make effects first-class, checked, and enforceable
 
-### Issue 008: Effect Syntax & Checking
-**Status:** Planned  
+### Issue 008: Effect Syntax & Inference
 **Estimated time:** 2-3 weeks  
-
-**Note on Elaboration:**  
-Issues 005 (constraint solving) and 008 (effect checking) together form the elaboration phase: converting inferred types (Ty with variables) to surface types (Type with effect rows).
-
 **Scope:**
-- Parse `& {Effect1, Effect2}` syntax on function types
-- Parse `using cap: CapType` parameters
-- Effect row representation (sets, not lists)
-- Effect inference (extend constraint system)
-- Effect subtyping: callee ⊆ caller
-- Effect checking pass
+- Effect syntax in function signatures: `fn f() -> T & {FS, Net}`
+- Effect inference and checking
+- Effect row unification
+- Effect propagation through call sites
+
+**Elaboration phase:**
+- Ty (inference) → Type (surface with effects)
+- Effect rows attached to function types
+- Type → Ty lowering for checking
 
 **Example:**
 ```strata
-fn deploy(path: String, using fs: FsCap, using net: NetCap) 
-    -> Result<Id, Error> & {FS, Net}
-{
-    let data = read_file(path, using fs)?;
-    upload(data, using net)
+fn read_file(path: String) -> Result<String, IoErr> & {FS}
+
+fn process_files(paths: Vec<String>) -> Result<(), IoErr> & {FS} {
+    for path in paths {
+        let content = read_file(path)?;
+        // Effect {FS} propagates
+    }
 }
 ```
 
-**Key decision:** Effect rows are concrete sets in v0.1
-- No row polymorphism (e.g., `& E` where E is a variable)
-- Design syntax to allow this later, but don't implement inference
-- Deferred to v0.2
-
 ### Issue 009: Capability Types
-**Status:** Planned  
 **Estimated time:** 1 week  
 **Scope:**
-- Standard capability types: `NetCap`, `FsCap`, `TimeCap`, `RandCap`, `AiCap`
-- Compiler enforces: to use effect, must have capability in scope
-- Error when effect used without corresponding capability
-- Capabilities are values (can be passed around)
+- Capability type definitions
+- `using cap: Type` parameter syntax
+- Capability passing at call sites
+- Capability checking enforcement
 
-**Key insight:** Capabilities gate access to effects:
+**Example:**
 ```strata
-// ❌ Compile error: Net effect used without NetCap
-fn bad() -> String & {Net} {
-    http_get("https://...")  // Error: No NetCap in scope
-}
+fn http_get(url: Url, using net: NetCap) 
+    -> Result<Bytes, NetErr> & {Net}
 
-// ✅ OK: NetCap explicitly provided
-fn good(using net: NetCap) -> String & {Net} {
-    http_get("https://...", using net)
-}
+// Call site:
+http_get(url, using net)?
 ```
 
 ### Issue 010: Profile Enforcement
-**Status:** Planned  
 **Estimated time:** 1 week  
 **Scope:**
-- Parse `@profile(Kernel|Realtime|General)` annotations
-- Profile checking pass:
-  - **Kernel**: No Net, FS, Time, Rand; no dynamic allocation
-  - **Realtime**: Bounded latency, backpressure, limited effects
-  - **General**: Full language (default)
-- Module-level profile declarations
-- Compiler errors for profile violations
+- Profile declarations: `profile Kernel;`
+- Effect restriction by profile
+- Compile-time profile checking
+- Clear error messages
 
 **Example:**
 ```strata
-@profile(Kernel)
-fn embedded_controller(sensor: u32) -> u32 {
-    // ✅ OK: Pure computation only
-    sensor * 2 + 1
+profile Kernel;
+
+fn compute(x: Int, y: Int) -> Int {
+    x + y  // OK - pure computation
 }
 
-@profile(Kernel)
-fn bad_kernel(using net: NetCap) -> u32 & {Net} {
-    // ❌ Compile error: Kernel profile forbids Net effect
-    ...
+fn bad_fetch(url: Url) -> String & {Net} {
+    // Compile error: Net effect not allowed in Kernel profile
 }
 ```
+
+**Phase 3 Result:** Effect-typed language with capability security and profile enforcement.
 
 ---
 
 ## Phase 4: Minimal Viable Runtime
 
-**Timeline:** Months 8-10 (Aug 2026 - Oct 2026)  
+**Timeline:** Months 7-10 (Jul 2026 - Oct 2026)  
 **Focus:** Get the killer demos working end-to-end
 
 ### 4.1: Standard Library (Minimal)
@@ -258,210 +366,242 @@ fn bad_kernel(using net: NetCap) -> u32 & {Net} {
 - Seedable RNG and Time (for determinism)
 - CLI flag: `--trace output.json`
 
+**Design consideration: Toggleable tracing for performance**
+
+Effect tracing should be optional to avoid overhead in performance-critical scenarios:
+
+```bash
+# Default: Tracing enabled (audit trails are the value proposition)
+strata run deploy.strata --trace trace.json
+
+# Optional: Disable tracing for performance
+strata run deploy.strata --no-trace
+
+# Replay always works on captured traces
+strata replay trace.json
+```
+
+**Implementation approach:**
+- Tracing enabled by default (audit trails are Strata's differentiator)
+- `--no-trace` flag disables trace generation for performance
+- Conditional execution: trace code only runs when enabled
+- Future optimization: compile-time elimination when provably not needed
+
+**Example trace output:**
+```json
+{
+  "program": "deploy.strata",
+  "start_time": "2026-08-15T10:00:00Z",
+  "effects": [
+    {"timestamp": "...", "effect": "FS.Read", "path": "/model.pkl", "bytes": 1048576},
+    {"timestamp": "...", "effect": "Net.Post", "url": "https://...", "status": 200},
+    ...
+  ],
+  "result": "Ok(\"deploy-123\")",
+  "duration_ms": 1234
+}
+```
+
 ### 4.3: Replay Runner
 **Estimated time:** 1 week  
 **Scope:**
 - Read effect trace JSON
 - Mock effectful operations with trace values
 - Re-execute program deterministically
-- Verify same result
 - CLI: `strata replay trace.json`
 
-**Key insight:** This is MUCH simpler than a full VM:
-- No bytecode, just replay with mocked effects
-- No JIT, just interpreter or compiled code with mocked I/O
-- Proves the replay concept without full VM complexity
+**Example usage:**
+```bash
+# Original run (fails)
+strata run deploy.strata --trace failed.json
+# Error: Connection timeout at line 45
 
-### 4.4: WASM Compilation Target (Basic)
+# Replay exact failure
+strata replay failed.json
+# Reproduces same failure deterministically
+```
+
+### 4.4: WASM Compilation (Basic)
 **Estimated time:** 2-3 weeks  
 **Scope:**
-- Compile Strata → WASM (via wasm-encoder or LLVM)
-- Basic runtime support (no WASI yet, just compute)
-- Effect boundaries map to imports/exports
-- Focus on getting compiled code to work
+- Lower AST → WASM instructions
+- Basic function calls
+- Arithmetic and logic operations
+- Memory management (arena-per-function)
+- FFI stubs for effects
 
 **Deferred to v0.2:**
-- Full WASI support
-- WASM Component Model integration
-- Edge runtime optimization
-- Browser support (nice-to-have, not focus)
+- Optimization passes
+- Advanced WASM features
+- Custom VM with bytecode
 
-**Rationale:** WASM is a better first runtime target than a custom VM because:
-- Deterministic by design
-- Sandboxed (aligns with capability model)
-- Runs everywhere (server, edge, eventually browser)
-- Simpler than building a VM from scratch
+**Phase 4 Result:** Working killer demos with effect traces and deterministic replay.
 
 ---
 
 ## Phase 5: Hardening & Launch
 
-**Timeline:** Months 11-14 (Nov 2026 - Feb 2027)  
-**Focus:** Polish, docs, examples, and v0.1 release
+**Timeline:** Months 10-14 (Oct 2026 - Feb 2027)  
+**Focus:** Make v0.1 production-ready and ship it
 
 ### 5.1: Developer Experience
-- Error messages polish (clear, helpful, with suggestions)
-- Span tracking improvements (accurate source locations)
-- Better type error explanations
-- Warning system (unused variables, dead code, etc.)
+**Estimated time:** 2-3 weeks  
+**Scope:**
+- Improved error messages with suggestions
+- Warnings for common mistakes
+- Help text and documentation strings
+- Stack traces with source spans
 
-### 5.2: Tooling
-- LSP basics (syntax highlighting, go-to-definition)
-- Code formatter (`strata fmt`)
+### 5.2: Tooling Basics
+**Estimated time:** 2-3 weeks  
+**Scope:**
+- LSP server (basic completion, go-to-definition)
+- Formatter (canonical style)
 - Test runner (`strata test`)
+
+**Deferred to v0.2:**
+- Debugger
+- REPL
+- Package manager
 - Documentation generator
 
 ### 5.3: Documentation
-- Language guide (tutorial)
-- Effect system explained
-- Capability model guide
-- Standard library docs
-- Migration guide (from Python/Bash)
-- Architecture docs (for contributors)
+**Estimated time:** 2-3 weeks  
+**Scope:**
+- Tutorial (from first program to killer demo)
+- Effect system guide
+- Standard library reference
+- Examples repository
 
 ### 5.4: Examples & Demos
+**Estimated time:** 2-3 weeks  
+**Scope:**
 - Polish the two killer demos
 - Add 10-15 example programs
 - Blog posts explaining key features
 - Video walkthrough of demos
 
 ### 5.5: Testing & CI
-- Comprehensive test suite (>90% coverage)
+**Estimated time:** 1-2 weeks  
+**Scope:**
+- Test coverage >90%
 - CI pipeline (GitHub Actions)
-- Property tests for type system
-- Integration tests for standard library
-- Determinism tests (replay validation)
+- Benchmark suite
+- Integration tests
 
-### 5.6: v0.1 Release
+### 5.6: Release
+**Estimated time:** 1 week  
+**Scope:**
+- Binary releases (Linux, macOS, Windows)
+- Installation script
 - Release notes
-- Announcement blog post
-- Hacker News / Reddit / Lobsters posts
-- Initial documentation site
-- GitHub releases with binaries
+- Launch blog post
+- HN/Reddit announcements
+
+**Phase 5 Result:** Production-ready v0.1 with great DX, docs, and tooling.
 
 ---
 
 ## Explicitly Deferred to v0.2+
 
-These features are out of scope for v0.1 to keep the timeline realistic:
+These features are important but not required for v0.1:
 
-### Row Polymorphism
-**Why deferred:** Adds significant complexity to inference  
-**When:** v0.2 (after v0.1 proves core value)  
-**Example of what we're missing:**
-```strata
-// v0.1: Must specify concrete effects
-fn map<T, U>(f: T -> U, opt: Option<T>) -> Option<U> & {FS, Net}
+### Deferred Language Features
+- **Row polymorphism** (effect variables: `fn f<E>() -> T & E`)
+- **Actors & supervision** (concurrency model)
+- **Async/await syntax** (concurrency primitives)
+- **Ownership/borrow checking** (memory safety beyond arenas)
+- **Advanced traits** (associated types, defaults, etc.)
+- **Custom VM with bytecode** (performance optimization)
+- **Logic programming (Datalog)** (explainability engine)
 
-// v0.2: Can be polymorphic over effects
-fn map<T, U, E>(f: T -> U & E, opt: Option<T>) -> Option<U> & E
-```
+### Deferred Tooling
+- Debugger
+- REPL
+- Package manager
+- Documentation generator
+- IDE plugins beyond LSP
 
-### Actors & Supervision
-**Why deferred:** Complex runtime, less critical for v0.1 demos  
-**When:** v0.2 (after basic runtime works)  
-**Design note:** Effect system is designed to accommodate actors later:
-```strata
-// v0.2 preview:
-actor Worker {
-    fn handle(msg: Job, using net: NetCap) -> Result & {Net} {
-        ...
-    }
-}
-```
+### Deferred Stdlib
+- Advanced collections (trees, graphs, ropes)
+- JSON/serialization
+- Database drivers
+- Advanced HTTP (streaming, WebSockets)
+- Crypto beyond hashing
+- Compression
 
-### Async/Await Syntax
-**Why deferred:** Runtime complexity, unclear design space  
-**When:** v0.2+ (after actor experience informs design)  
-**Design note:** Effect types are async-ready, but no syntax commitment yet
-
-### Ownership & Borrow Checking
-**Why deferred:** High complexity, arena model sufficient for v0.1  
-**When:** v0.3+ (if demand exists)  
-**Current approach:** Arena-per-function with explicit `drop`
-
-### Advanced Trait Features
-**Why deferred:** Complex to implement, not needed for v0.1  
-**When:** v0.2  
-**Includes:**
-- Associated types
-- Default methods
-- Higher-kinded types
-- Trait aliases
-
-### Logic Programming (Datalog)
-**Why deferred:** Separate feature, not needed for automation demos  
-**When:** v0.2-v0.3  
-**Design note:** Will integrate as library, not compiler phase
-
-### Self-Hosting
-**Why deferred:** Language needs to be stable first  
-**When:** v0.3+ (18-24 months post-v0.1)  
-**Possible earlier:** Self-host the type checker in v0.2 as proof-of-concept
-
-### Full VM with Bytecode
-**Why deferred:** WASM is better first runtime target  
-**When:** Post-v0.1 (if demand exists for non-WASM runtime)  
-**Alternative:** May not need custom VM if WASM works well
+**Rationale for deferrals:** Each deferred feature saves 1-6 months. Focus on proving core value (effects + capabilities + replay) before expanding scope.
 
 ---
 
 ## Timeline Summary
 
-| Phase | Duration | Completion Date | Key Deliverables | Status |
-|-------|----------|-----------------|------------------|--------|
-| Phase 2 (Type System) | 3-4 months | Apr 2026 | Issues 005-007 complete | 🔄 In Progress |
-| Phase 3 (Effects) | 2-3 months | Jul 2026 | Issues 008-010 complete | Planned |
-| Phase 4 (Runtime) | 2-3 months | Oct 2026 | Demos working, basic WASM | Planned |
-| Phase 5 (Hardening) | 3-4 months | Dec 2026 - Feb 2027 | v0.1 release | Planned |
-| **Total** | **10-14 months** | **Feb 2027** | **Strata v0.1** | |
+**Phase 1 (Complete):** Foundation - Parser, AST, Effects, Basic Types  
+**Months 0-1** ✅
 
-**Confidence level:** Medium-high (based on actual Issue 005-006 velocity)
+**Phase 2 (Mostly Complete):** Type System - Functions, Inference, ADTs, Patterns  
+**Months 1-4** (Issues 005-006 ✅, Issue 007 in progress)
 
-**Velocity check (Feb 2026):**
-- Issues 001-006 + hardening completed in ~2 months
-- On track for Phase 2 completion by Apr 2026
-- 163 tests, solid foundation
+**Phase 3 (Next):** Effect System - Effect checking, Capabilities, Profiles  
+**Months 4-7**
 
-**Risk factors:**
-- ADT/pattern matching complexity (Issue 007 is substantial)
-- Effect system interactions (Issues 008-010 may reveal edge cases)
-- WASM compilation challenges (Phase 4 is less predictable)
+**Phase 4:** Runtime - Stdlib, Tracing, Replay, WASM  
+**Months 7-10**
 
-**Mitigation:** Timebox each issue. If something takes >2x estimated time, cut scope rather than delay.
+**Phase 5:** Hardening & Launch - DX, Tooling, Docs, Release  
+**Months 10-14**
+
+**Total: 10-14 months from project start to v0.1 launch**
 
 ---
 
-## Post-v0.1 Vision (v0.2-v0.5)
+## Current Status (v0.0.7.0)
 
-**v0.2 (6-9 months post-v0.1):**
-- Row polymorphism
-- Actors & supervision
-- Advanced trait features
-- Improved tooling (better LSP, debugger)
-- Expanded standard library
+**Completed:**
+- ✅ Parser & AST (Issue 001)
+- ✅ Effects & Profiles (Issue 002)
+- ✅ Type Inference Scaffolding (Issue 003)
+- ✅ Basic Type Checking (Issue 004)
+- ✅ Functions & Inference (Issue 005)
+- ✅ Soundness Hardening (Issue 005-b)
+- ✅ Blocks & Control Flow (Issue 006)
+- ✅ Security Hardening (Issue 006-Hardening)
 
-**v0.3 (12-18 months post-v0.1):**
-- Logic programming (Datalog integration)
-- Self-hosting experiments
-- Async/await design
-- Performance optimizations
+**In Progress:**
+- 🔄 ADTs & Pattern Matching (Issue 007) - Design review
 
-**v0.4-v0.5 (18-30 months post-v0.1):**
-- Production hardening
-- Ownership/borrow checking (if needed)
-- Full WASI support
-- Ecosystem building (package manager, registry)
+**Next Up:**
+- Effect Syntax & Inference (Issue 008)
+- Capability Types (Issue 009)
+- Profile Enforcement (Issue 010)
+
+**Project Stats:**
+- 163 tests (all passing)
+- 4 crates (ast, parse, types, cli)
+- ~5,500+ lines of Rust
+- 0 clippy warnings (enforced)
 
 ---
 
-## Success Metrics for v0.1
+## Success Metrics
 
-**Minimum success:**
-- 2-3 early adopters use Strata for production automation
-- Killer demos prove value proposition
-- No major architectural regrets (can build v0.2 on v0.1 foundation)
+### Technical Milestones
+- ✅ Parser working
+- ✅ Basic type checking
+- ✅ HM inference with polymorphism
+- ✅ Control flow (if/while/return)
+- 🔄 ADTs and pattern matching (in progress)
+- ⏳ Effect system complete
+- ⏳ Capability enforcement
+- ⏳ Working killer demos
 
+### Quality Metrics
+- Test coverage >90% (currently ~85%)
+- Zero clippy warnings ✅
+- Deterministic behavior ✅
+- Clear error messages (improving)
+
+### Launch Metrics (v0.1)
 **Good success:**
 - 10+ GitHub stars/week after launch
 - Blog posts/discussions in Rust/Haskell/ops communities
@@ -469,37 +609,29 @@ actor Worker {
 - At least one "I rewrote my deploy scripts in Strata" testimonial
 
 **Great success:**
-- HN/Reddit front page for a day
 - 50+ GitHub stars/week
-- Other language designers cite Strata's effect system
-- First external contribution merged
-- Job posting mentioning Strata
+- Trending on HN front page
+- Multiple blog posts from users
+- Early adopter companies identified
 
----
-
-## Philosophy Reminders
-
-**"Boring but Clear":**
-- Developer understanding over language novelty
-- Explicit over implicit
-- Safety over convenience
-- Clarity over cleverness
-
-**Ship, Don't Perfect:**
-- v0.1 is a foundation, not the final form
-- Better to ship with 80% of features than 100% never
-- Learn from real users, then iterate
-
-**Focus on Value:**
-- Every feature must serve the automation engineer use case
-- If it doesn't help with the killer demos, defer it
-- Prove core value first, expand scope later
+**Knock-it-out success:**
+- 100+ stars/week
+- Multiple conference acceptances
+- Companies asking "when can we use this in prod?"
+- Partnership discussions with workflow platforms
 
 ---
 
 ## Related Documents
 
-- **[KILLER_DEMOS.md](KILLER_DEMOS.md)** - Detailed v0.1 demo scenarios
-- **[IN_PROGRESS.md](IN_PROGRESS.md)** - Current work and status
-- **[IMPLEMENTED.md](IMPLEMENTED.md)** - What actually works right now
-- **[DESIGN_DECISIONS.md](DESIGN_DECISIONS.md)** - Key design choices and rationale
+- [`IMPLEMENTED.md`](IMPLEMENTED.md) - Detailed feature status
+- [`IN_PROGRESS.md`](IN_PROGRESS.md) - Current work and next steps
+- [`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md) - Technical and architectural choices
+- [`KILLER_DEMOS.md`](KILLER_DEMOS.md) - v0.1 demo specifications
+- [`issues/`](../issues/) - Detailed issue specifications
+
+---
+
+**Last Updated:** February 3, 2026  
+**Current Version:** v0.0.7.0  
+**Next Review:** After Issue 007 completion (est. mid-February 2026)

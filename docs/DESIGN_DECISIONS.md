@@ -1,14 +1,199 @@
 # Strata Design Decisions
 
 > Key technical and architectural choices that guide implementation  
-> Updated: February 1, 2026
+> Updated: February 3, 2026
 
-This document captures important design decisions and their rationale. These are the choices that inform implementation but often don't make it into user-facing docs.
+This document captures Strata's design philosophy and specific technical decisions. These guide implementation and explain "why Strata is this way."
 
 For detailed analysis of major decisions, see the ADR (Architecture Decision Records) files:
 - [ADR-0001: Effect Rows Are Set-like, Orderless](adr-0001.md)
 - [ADR-0002: Hierarchical Capability Bundles](adr-0002.md)
 - [ADR-0003: Multi-Parameter Functions Over Currying](adr-0003.md)
+
+---
+
+## Design Philosophy & Core Principles
+
+Strata is an **anti-single-axis language** that refuses to sacrifice any core pillar for the sake of others. This section explains the philosophy that guides all design decisions.
+
+### The Anti-Single-Axis Stance
+
+Most programming languages optimize for ONE primary goal:
+- Python: Ease of use
+- Rust: Memory safety + performance
+- Go: Simplicity
+- Haskell: Correctness + purity
+
+**Strata refuses to pick one.** Instead, it treats these as **equally important pillars**:
+
+1. **Type Soundness** - Compile-time safety guarantees
+2. **Operational Reality** - Explicit handling of failure, concurrency, and effects
+3. **Human Factors** - Preventing misuse, enabling debugging, maintaining clarity
+4. **Security** - Making authority boundaries explicit and enforceable
+5. **Long-term Maintainability** - Audit trails, governance, and explainability
+
+### Why This Matters
+
+Modern automation runs critical infrastructure:
+- AI agents making autonomous decisions
+- Deployment scripts touching production systems
+- Security playbooks responding to incidents
+- ML pipelines processing sensitive data
+
+**When these fail, the consequences are real.** Not just "program crashed" but:
+- Financial losses
+- Security breaches
+- Compliance violations
+- Patient safety risks
+
+**Strata treats automation as a governed act, not just computation.**
+
+### The 8 Design Guardrails
+
+These principles prevent Strata from falling into traps that killed similar languages (Pony, Oz, etc.). For full context and historical analysis, see the private repo `strata-strategy/docs/design-principles.md`.
+
+#### 1. Power Must Be Visible
+
+**Principle:** Any action with real-world consequences must be explicit in the code.
+
+**Why:** Hidden authority is a security and maintainability disaster. If you can't see what code can do by reading it, you can't audit it, review it, or debug it.
+
+**In practice:**
+```strata
+// ❌ BAD: Implicit authority
+fn deploy(model: Model) {
+    upload(model);  // Where did network access come from?
+}
+
+// ✅ GOOD: Explicit authority
+fn deploy(model: Model, using net: NetCap) 
+    -> Result<Deployment> & {Net} {
+    upload(model, using net)
+}
+```
+
+#### 2. Inference Reduces Syntax, Never Meaning
+
+**Principle:** Type inference is valuable, but never infer effects or authority.
+
+**Why:** When debugging at 3am, you need to understand what code does without consulting compiler internals. Clever inference that hides meaning is a debugging nightmare.
+
+**In practice:**
+- ✅ Infer expression types: `let x = 5` (Int inferred)
+- ❌ Don't infer effects: `& {FS, Net}` must be explicit
+- ❌ Don't infer capabilities: `using cap: Cap` must be explicit
+
+#### 3. Failure Story Before Success Story
+
+**Principle:** Every language feature must define its failure behavior before we implement the happy path.
+
+**Why:** Systems are defined by how they fail, not how they succeed. Postponing failure handling leads to undefined behavior in production.
+
+**In practice:**
+- All functions return `Result<T, E>`, not raw values
+- Effect traces capture failures
+- Deterministic replay for debugging
+- No exceptions (explicit error handling only)
+
+#### 4. Legible to Competent Engineers
+
+**Principle:** Code must be understandable by a competent engineer who didn't design the language.
+
+**Why:** Systems are maintained by tired people, new hires, and stressed responders. If correct usage requires deep language knowledge or folklore, the language has failed.
+
+**In practice:**
+- Clear, self-explanatory syntax
+- Helpful error messages
+- Minimal "magic"
+- No hidden conventions
+
+#### 5. Governed, Not Forbidden
+
+**Principle:** Dangerous operations should be tracked, not eliminated.
+
+**Why:** Real systems need dangerous operations (shell commands, network calls, file writes). The question is whether they're visible, bounded, and auditable.
+
+**In practice:**
+```strata
+// ✅ Shell commands allowed, but governed
+fn run_command(
+    cmd: String,
+    using shell: ShellCap,
+    using audit: AuditCap
+) -> Result<o> & {Shell, Audit} {
+    // Explicit capability required
+    // Effect tracked
+    // Logged to audit trail
+}
+```
+
+#### 6. Composition Preserves Responsibility
+
+**Principle:** When safe components compose, the aggregate effect must be visible and require appropriate authority.
+
+**Why:** Composition is where intent dissolves. If five safe steps combine to do something unsafe, the language must surface that escalation.
+
+**In practice:**
+```strata
+fn workflow(
+    using fs: FsCap,
+    using net: NetCap,
+    using db: DbCap
+) -> Result<o> & {FS, Net, DB} {  // All effects visible
+    step1(using fs)?;
+    step2(using net)?;
+    step3(using db)?;
+}
+```
+
+#### 7. Integrity Over Adoption
+
+**Principle:** The first users should be people who want the constraints.
+
+**Why:** Early adopters define your culture forever. If we compromise core safety for easier adoption, we've already lost.
+
+**In practice:**
+- No `@unsafe` escape hatches in v0.1
+- No "skip effect checking" flags
+- Performance optimization is v0.2+, not v0.1
+- Target users who need audit trails, not users who want Python-style freedom
+
+#### 8. Encode Ethics Into Mechanics
+
+**Principle:** Safety must be enforced by the type system, not conventions or documentation.
+
+**Why:** Languages outlive their creators. If Strata only works because of careful human discipline, it will fail when those humans leave.
+
+**In practice:**
+- Capabilities enforced by compiler
+- Effects tracked automatically
+- Can't bypass safety without explicit FFI
+- No reliance on "best practices"
+
+### Design Mantras
+
+Short principles to internalize:
+
+- **On Safety:** "Power should be visible, not eliminated."
+- **On Failure:** "Failure story before success story."
+- **On Inference:** "Inference may reduce syntax, never meaning."
+- **On Humans:** "Legible to a competent engineer who didn't design it."
+- **On Culture:** "Early adopters define culture forever."
+- **On Time:** "Encode ethics into mechanics."
+
+### When to Apply These Principles
+
+**Always reference for:**
+- Designing major features (generics, effects, actors)
+- Architectural decisions
+- Scope additions or cuts
+
+**Don't overthink for:**
+- Straightforward implementation (parser, simple types)
+- Obvious code that doesn't affect architecture
+- Trivial decisions
+
+**The goal:** Refuse compromise on core principles, but don't let philosophy paralyze development.
 
 ---
 
@@ -79,7 +264,7 @@ add: (Int, Int) -> Int
 - Capability passing is more visually distinct
 - Partial application can be explicit with lambdas when needed
 
-**See:** [ADR-0003](adr-0003.md) for full analysis and alternatives considered.
+**See:** [ADR-0003](adr/adr-0003.md) for full analysis and alternatives considered.
 
 **Status:** Locked in - implemented in Issue 005
 
@@ -103,7 +288,7 @@ add: (Int, Int) -> Int
 
 **Deferred:** Row polymorphism (effect variables like `E`)
 
-**See:** [ADR-0001](adr-0001.md) for detailed specification.
+**See:** [ADR-0001](adr/adr-0001.md) for detailed specification.
 
 **Status:** Implemented in Issue 002 (`strata-types/src/effects.rs`)
 
@@ -229,7 +414,7 @@ strata describe role IncidentResponder
 # Shows all capabilities, sub-roles, usage
 ```
 
-**See:** [ADR-0002](adr-0002.md) for full design including compiler warnings for over-permission.
+**See:** [ADR-0002](adr/adr-0002.md) for full design including compiler warnings for over-permission.
 
 **Status:** Planned for v0.2 (after fine-grained capabilities work in v0.1)
 
@@ -502,7 +687,7 @@ fn map<T, U, E>(f: fn(T) -> U & E, xs: [T]) -> [U] & E
 
 **Why rejected:** Unfamiliar to target audience (ops teams), partial application errors are confusing, type signatures harder to read.
 
-**See:** [ADR-0003](adr-0003.md) for full rationale.
+**See:** [ADR-0003](adr/adr-0003.md) for full rationale.
 
 ---
 
@@ -526,5 +711,5 @@ When adding new decisions, use this format:
 
 For major decisions that need extensive analysis, create an ADR file instead:
 - Name: `adr-NNNN.md` where NNNN is a zero-padded number
-- Link from this doc: `**See:** [ADR-NNNN](adr-NNNN.md)`
+- Link from this doc: `**See:** [ADR-NNNN](adr/adr-NNNN.md)`
 - Keep this doc focused, use ADRs for deep dives
