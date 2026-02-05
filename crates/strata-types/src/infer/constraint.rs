@@ -8,8 +8,10 @@
 //! for adding effects and other extensions later.
 
 use super::ty::{free_vars, Constraint, Scheme, Ty, TypeVarId};
+use crate::adt::AdtRegistry;
+use crate::exhaustive::{self, ExhaustivenessError};
 use std::collections::{HashMap, HashSet};
-use strata_ast::ast::{BinOp, Block, Expr, Lit, Stmt, UnOp};
+use strata_ast::ast::{BinOp, Block, Expr, FieldInit, Lit, MatchArm, Pat, Path, Stmt, UnOp};
 use strata_ast::span::Span;
 
 /// Maximum inference depth to prevent stack overflow from pathological input
@@ -26,6 +28,52 @@ pub enum InferError {
     NotImplemented { msg: String, span: Span },
     /// Inference depth limit exceeded (pathological input)
     DepthLimitExceeded { span: Span },
+    /// Duplicate binding in pattern
+    DuplicateBinding { name: String, span: Span },
+    /// Unknown type in pattern
+    UnknownType { name: String, span: Span },
+    /// Unknown variant in pattern
+    UnknownVariant {
+        type_name: String,
+        variant: String,
+        span: Span,
+    },
+    /// Wrong number of fields in pattern
+    PatternArityMismatch {
+        expected: usize,
+        found: usize,
+        span: Span,
+    },
+    /// Missing field in struct pattern/expression
+    MissingField {
+        struct_name: String,
+        field: String,
+        span: Span,
+    },
+    /// Unknown field in struct pattern/expression
+    UnknownField {
+        struct_name: String,
+        field: String,
+        span: Span,
+    },
+    /// Duplicate field in struct expression
+    DuplicateField { field: String, span: Span },
+    /// Tuple arity exceeds limit
+    TupleArityLimit {
+        max: usize,
+        found: usize,
+        span: Span,
+    },
+    /// Match is not exhaustive
+    NonExhaustiveMatch { witness: String, span: Span },
+    /// Pattern arm is unreachable
+    UnreachablePattern { arm_index: usize, span: Span },
+    /// Exhaustiveness checking limit exceeded (DoS protection)
+    ExhaustivenessLimitExceeded { msg: String, span: Span },
+    /// Refutable pattern in let binding (should use match instead)
+    RefutablePattern { pat_desc: String, span: Span },
+    /// Capability type found in a binding
+    CapabilityInBinding { cap_type: String, span: Span },
 }
 
 /// Context for type checking within a scope
@@ -40,6 +88,8 @@ pub struct CheckContext {
     pub mutability: HashMap<String, bool>,
     /// Expected return type for `return` statements (None if not in a function)
     pub expected_return: Option<Ty>,
+    /// ADT registry for looking up struct/enum definitions (for pattern checking)
+    pub adt_registry: Option<AdtRegistry>,
 }
 
 impl CheckContext {
@@ -49,6 +99,7 @@ impl CheckContext {
             env: HashMap::new(),
             mutability: HashMap::new(),
             expected_return: None,
+            adt_registry: None,
         }
     }
 
@@ -58,15 +109,27 @@ impl CheckContext {
             env,
             mutability: HashMap::new(),
             expected_return: None,
+            adt_registry: None,
         }
     }
 
-    /// Create a child context with the same expected_return
+    /// Create a context from an existing environment and ADT registry
+    pub fn from_env_with_registry(env: HashMap<String, Scheme>, registry: AdtRegistry) -> Self {
+        CheckContext {
+            env,
+            mutability: HashMap::new(),
+            expected_return: None,
+            adt_registry: Some(registry),
+        }
+    }
+
+    /// Create a child context with the same expected_return and registry
     pub fn child(&self) -> Self {
         CheckContext {
             env: self.env.clone(),
             mutability: self.mutability.clone(),
             expected_return: self.expected_return.clone(),
+            adt_registry: self.adt_registry.clone(),
         }
     }
 
@@ -213,7 +276,7 @@ impl InferCtx {
             Expr::Binary { lhs, op, rhs, span } => self.infer_binary_ctx(ctx, *op, lhs, rhs, *span),
 
             // Function calls
-            Expr::Call { callee, args, .. } => {
+            Expr::Call { callee, args, span } => {
                 // Infer function type
                 let func_ty = self.infer_expr_ctx(ctx, callee)?;
 
@@ -231,8 +294,11 @@ impl InferCtx {
                 let expected_fn_ty = Ty::arrow(arg_tys, result_ty.clone());
                 let call_span = match callee.as_ref() {
                     Expr::Var(id) => id.span,
-                    Expr::Paren { span, .. } => *span,
-                    _ => Span { start: 0, end: 0 }, // Fallback
+                    Expr::Paren {
+                        span: paren_span, ..
+                    } => *paren_span,
+                    Expr::PathExpr(path) => path.span,
+                    _ => *span, // Use the call expression span as fallback
                 };
                 self.add_constraint(Constraint::Equal(func_ty, expected_fn_ty, call_span));
 
@@ -252,6 +318,24 @@ impl InferCtx {
 
             // While loop
             Expr::While { cond, body, span } => self.infer_while(ctx, cond, body, *span),
+
+            // Match expression
+            Expr::Match {
+                scrutinee,
+                arms,
+                span,
+            } => self.infer_match(ctx, scrutinee, arms, *span),
+
+            // Tuple expression
+            Expr::Tuple { elems, span } => self.infer_tuple(ctx, elems, *span),
+
+            // Struct expression
+            Expr::StructExpr { path, fields, span } => {
+                self.infer_struct_expr(ctx, path, fields, *span)
+            }
+
+            // Path expression (enum constructor)
+            Expr::PathExpr(path) => self.infer_path_expr(ctx, path),
         }
     }
 
@@ -292,7 +376,7 @@ impl InferCtx {
         match stmt {
             Stmt::Let {
                 mutable,
-                name,
+                pat,
                 ty,
                 value,
                 span,
@@ -301,12 +385,40 @@ impl InferCtx {
                 let value_ty = self.infer_expr_ctx(ctx, value)?;
 
                 // If there's a type annotation, add constraint
+                // (only allowed for simple identifier patterns)
                 if let Some(ann_ty) = ty {
                     let expected = ty_from_type_expr(ann_ty)?;
                     self.add_constraint(Constraint::Equal(value_ty.clone(), expected, *span));
                 }
 
-                // Add binding to context as MONOMORPHIC.
+                // Check that the pattern is irrefutable
+                if !is_irrefutable(ctx, pat) {
+                    return Err(InferError::RefutablePattern {
+                        pat_desc: Self::refutable_pattern_desc(pat),
+                        span: pat.span(),
+                    });
+                }
+
+                // Check for capability types in the binding type.
+                // This is a best-effort check: value_ty may still contain
+                // unresolved type variables, which will be caught post-solving
+                // when the effect system lands (Issue 008).
+                if crate::adt::contains_capability(&value_ty) {
+                    let cap_name = crate::adt::find_capability_name(&value_ty)
+                        .unwrap_or("capability".to_string());
+                    return Err(InferError::CapabilityInBinding {
+                        cap_type: cap_name,
+                        span: *span,
+                    });
+                }
+
+                // Check pattern against value type, get bindings
+                let bindings = self.check_pattern(ctx, pat, &value_ty)?;
+
+                // Check for duplicate bindings
+                self.check_duplicate_bindings(&bindings)?;
+
+                // Add bindings to context as MONOMORPHIC.
                 //
                 // Design decision: Block-level let bindings are not generalized because:
                 // 1. Simplicity: Generalizing requires solving constraints first, which
@@ -319,7 +431,9 @@ impl InferCtx {
                 //   let id = fn(x) { x }; // id is polymorphic as a fn decl
                 //   let x = id(1);        // x: Int
                 //   let y = id(true);     // y: Bool
-                ctx.bind(name.text.clone(), Scheme::mono(value_ty), *mutable);
+                for binding in bindings {
+                    ctx.bind(binding.name, Scheme::mono(binding.ty), *mutable);
+                }
 
                 Ok(())
             }
@@ -520,6 +634,560 @@ impl InferCtx {
             }
         }
     }
+
+    // ============ Phase 4: Match, Tuple, Struct, Path Inference ============
+
+    /// Infer the type of a match expression
+    fn infer_match(
+        &mut self,
+        ctx: &CheckContext,
+        scrutinee: &Expr,
+        arms: &[MatchArm],
+        span: Span,
+    ) -> Result<Ty, InferError> {
+        // Infer scrutinee type
+        let scrutinee_ty = self.infer_expr_ctx(ctx, scrutinee)?;
+
+        // Special case: matching on Never - empty match is valid, returns Never
+        if scrutinee_ty == Ty::Never {
+            return Ok(Ty::Never);
+        }
+
+        let mut result_ty: Option<Ty> = None;
+
+        for arm in arms {
+            // Check pattern against scrutinee type, get bindings
+            let bindings = self.check_pattern(ctx, &arm.pat, &scrutinee_ty)?;
+
+            // Check for duplicate bindings within this pattern
+            self.check_duplicate_bindings(&bindings)?;
+
+            // Create child context with pattern bindings
+            let mut arm_ctx = ctx.child();
+            for binding in &bindings {
+                arm_ctx.bind(
+                    binding.name.clone(),
+                    Scheme::mono(binding.ty.clone()),
+                    false,
+                );
+            }
+
+            // Infer arm body type
+            let arm_ty = self.infer_expr_ctx(&arm_ctx, &arm.body)?;
+
+            // Join arm types (Never arms don't contribute)
+            if arm_ty != Ty::Never {
+                match &result_ty {
+                    None => result_ty = Some(arm_ty),
+                    Some(existing) => {
+                        self.add_constraint(Constraint::Equal(existing.clone(), arm_ty, arm.span));
+                    }
+                }
+            }
+        }
+
+        // Exhaustiveness and redundancy checking
+        // Note: We only skip exhaustiveness checking if the scrutinee type ITSELF is an
+        // unresolved inference variable. If it's an ADT that contains type variables as
+        // arguments (e.g., Option<T> in a generic function), we still run exhaustiveness
+        // because the constructor set is known (Some/None) even if the payload type isn't.
+        if let Some(registry) = &ctx.adt_registry {
+            // Only skip if the scrutinee is a bare type variable (not yet resolved)
+            let is_unresolved_var = matches!(&scrutinee_ty, Ty::Var(_));
+            if is_unresolved_var {
+                // Skip exhaustiveness check - scrutinee type not yet resolved
+                return Ok(result_ty.unwrap_or(Ty::Never));
+            }
+            match exhaustive::check_match(arms, &scrutinee_ty, registry, span) {
+                Ok((witness_opt, redundant)) => {
+                    // Check for non-exhaustive match
+                    if let Some(witness) = witness_opt {
+                        return Err(InferError::NonExhaustiveMatch {
+                            witness: format!("{}", witness),
+                            span,
+                        });
+                    }
+                    // Report first unreachable pattern (if any)
+                    if let Some(&arm_idx) = redundant.first() {
+                        // Find the span for this arm
+                        let arm_span = arms.get(arm_idx).map(|a| a.span).unwrap_or(span);
+                        return Err(InferError::UnreachablePattern {
+                            arm_index: arm_idx,
+                            span: arm_span,
+                        });
+                    }
+                }
+                Err(ExhaustivenessError::MatrixTooLarge { size, span }) => {
+                    return Err(InferError::ExhaustivenessLimitExceeded {
+                        msg: format!("pattern matrix too large: {} elements", size),
+                        span,
+                    });
+                }
+                Err(ExhaustivenessError::DepthExceeded { span }) => {
+                    return Err(InferError::ExhaustivenessLimitExceeded {
+                        msg: "exhaustiveness check depth limit exceeded".to_string(),
+                        span,
+                    });
+                }
+                Err(ExhaustivenessError::NonExhaustive { witness, span }) => {
+                    return Err(InferError::NonExhaustiveMatch {
+                        witness: format!("{}", witness),
+                        span,
+                    });
+                }
+            }
+        }
+
+        // Return joined type or Never if all arms diverge
+        Ok(result_ty.unwrap_or(Ty::Never))
+    }
+
+    /// Check a pattern against an expected type, returning bindings
+    fn check_pattern(
+        &mut self,
+        ctx: &CheckContext,
+        pat: &Pat,
+        expected: &Ty,
+    ) -> Result<Vec<PatternBinding>, InferError> {
+        match pat {
+            Pat::Wildcard(_) => Ok(vec![]),
+
+            Pat::Ident(ident) => Ok(vec![PatternBinding {
+                name: ident.text.clone(),
+                ty: expected.clone(),
+                span: ident.span,
+            }]),
+
+            Pat::Literal(lit, span) => {
+                let lit_ty = self.infer_lit(lit);
+                self.add_constraint(Constraint::Equal(lit_ty, expected.clone(), *span));
+                Ok(vec![])
+            }
+
+            Pat::Tuple(pats, span) => {
+                // Expected must be Tuple of same arity
+                match expected {
+                    Ty::Tuple(tys) => {
+                        if tys.len() != pats.len() {
+                            return Err(InferError::PatternArityMismatch {
+                                expected: tys.len(),
+                                found: pats.len(),
+                                span: *span,
+                            });
+                        }
+                        let mut bindings = vec![];
+                        for (pat, ty) in pats.iter().zip(tys.iter()) {
+                            bindings.extend(self.check_pattern(ctx, pat, ty)?);
+                        }
+                        Ok(bindings)
+                    }
+                    _ => {
+                        // Expected is a type variable - create fresh vars for elements
+                        let elem_tys: Vec<Ty> = pats.iter().map(|_| self.fresh_var()).collect();
+                        self.add_constraint(Constraint::Equal(
+                            Ty::Tuple(elem_tys.clone()),
+                            expected.clone(),
+                            *span,
+                        ));
+                        let mut bindings = vec![];
+                        for (pat, ty) in pats.iter().zip(elem_tys.iter()) {
+                            bindings.extend(self.check_pattern(ctx, pat, ty)?);
+                        }
+                        Ok(bindings)
+                    }
+                }
+            }
+
+            Pat::Variant { path, fields, span } => {
+                // Look up constructor in environment
+                let ctor_name = path_to_string(path);
+
+                let scheme = ctx.env.get(&ctor_name).ok_or_else(|| {
+                    // Try to provide a better error message
+                    let parts: Vec<&str> = ctor_name.split("::").collect();
+                    if parts.len() >= 2 {
+                        InferError::UnknownVariant {
+                            type_name: parts[..parts.len() - 1].join("::"),
+                            variant: parts[parts.len() - 1].to_string(),
+                            span: *span,
+                        }
+                    } else {
+                        InferError::UnknownVariable {
+                            name: ctor_name.clone(),
+                            span: *span,
+                        }
+                    }
+                })?;
+
+                // Instantiate constructor scheme
+                let ctor_ty = scheme.instantiate(|| self.fresh_var());
+
+                // Constructor type should be Arrow(params, result)
+                let (param_tys, result_ty) = match &ctor_ty {
+                    Ty::Arrow(params, ret) => (params.clone(), ret.as_ref().clone()),
+                    _ => {
+                        // Not a function - might be a unit constructor
+                        (vec![], ctor_ty.clone())
+                    }
+                };
+
+                // Unify result type with expected type
+                self.add_constraint(Constraint::Equal(result_ty, expected.clone(), *span));
+
+                // Check arity
+                if param_tys.len() != fields.len() {
+                    return Err(InferError::PatternArityMismatch {
+                        expected: param_tys.len(),
+                        found: fields.len(),
+                        span: *span,
+                    });
+                }
+
+                // Check each field pattern
+                let mut bindings = vec![];
+                for (pat, ty) in fields.iter().zip(param_tys.iter()) {
+                    bindings.extend(self.check_pattern(ctx, pat, ty)?);
+                }
+                Ok(bindings)
+            }
+
+            Pat::Struct { path, fields, span } => {
+                // Look up struct in registry
+                let struct_name = path_to_string(path);
+
+                let registry =
+                    ctx.adt_registry
+                        .as_ref()
+                        .ok_or_else(|| InferError::NotImplemented {
+                            msg: "Struct patterns require ADT registry".to_string(),
+                            span: *span,
+                        })?;
+
+                let adt_def =
+                    registry
+                        .get(&struct_name)
+                        .ok_or_else(|| InferError::UnknownType {
+                            name: struct_name.clone(),
+                            span: *span,
+                        })?;
+
+                // Get struct fields
+                let struct_fields = adt_def.fields().ok_or_else(|| InferError::NotImplemented {
+                    msg: format!("'{}' is not a struct", struct_name),
+                    span: *span,
+                })?;
+
+                // Instantiate type parameters with fresh vars
+                let type_args: Vec<Ty> = (0..adt_def.arity()).map(|_| self.fresh_var()).collect();
+                let struct_ty = Ty::adt(&struct_name, type_args.clone());
+
+                // Unify with expected type
+                self.add_constraint(Constraint::Equal(struct_ty, expected.clone(), *span));
+
+                // Create substitution for type parameters
+                let type_subst: HashMap<TypeVarId, Ty> = (0..adt_def.arity())
+                    .map(|i| (TypeVarId(i as u32), type_args[i].clone()))
+                    .collect();
+
+                // Check each field pattern
+                let mut bindings = vec![];
+                let mut seen_fields = HashSet::new();
+
+                for pat_field in fields {
+                    let field_name = &pat_field.name.text;
+
+                    // Check for duplicate fields
+                    if !seen_fields.insert(field_name.clone()) {
+                        return Err(InferError::DuplicateField {
+                            field: field_name.clone(),
+                            span: pat_field.span,
+                        });
+                    }
+
+                    // Find field in struct definition
+                    let field_def = struct_fields
+                        .iter()
+                        .find(|f| f.name == *field_name)
+                        .ok_or_else(|| InferError::UnknownField {
+                            struct_name: struct_name.clone(),
+                            field: field_name.clone(),
+                            span: pat_field.span,
+                        })?;
+
+                    // Substitute type parameters in field type
+                    let field_ty = substitute_type_vars(&field_def.ty, &type_subst);
+
+                    // Check pattern
+                    bindings.extend(self.check_pattern(ctx, &pat_field.pat, &field_ty)?);
+                }
+
+                // Note: We don't require all fields to be present in patterns
+                // (partial matching is allowed)
+
+                Ok(bindings)
+            }
+        }
+    }
+
+    /// Check for duplicate bindings in a pattern
+    fn check_duplicate_bindings(&self, bindings: &[PatternBinding]) -> Result<(), InferError> {
+        let mut seen = HashSet::new();
+        for b in bindings {
+            if !seen.insert(&b.name) {
+                return Err(InferError::DuplicateBinding {
+                    name: b.name.clone(),
+                    span: b.span,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Get a description of why a pattern is refutable
+    fn refutable_pattern_desc(pat: &Pat) -> String {
+        match pat {
+            Pat::Literal(lit, _) => format!("literal pattern `{:?}`", lit),
+            Pat::Variant { path, .. } => {
+                let name = path
+                    .segments
+                    .iter()
+                    .map(|s| s.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                format!("enum variant `{}`", name)
+            }
+            Pat::Tuple(pats, _) => {
+                // Find the first refutable sub-pattern
+                for (i, p) in pats.iter().enumerate() {
+                    if !matches!(p, Pat::Wildcard(_) | Pat::Ident(_)) {
+                        return format!("tuple element {} is refutable", i);
+                    }
+                }
+                "tuple pattern".to_string()
+            }
+            Pat::Struct { path, .. } => {
+                format!("struct `{}`", path.as_str())
+            }
+            _ => "pattern".to_string(),
+        }
+    }
+
+    /// Infer type of tuple expression
+    fn infer_tuple(
+        &mut self,
+        ctx: &CheckContext,
+        elems: &[Expr],
+        span: Span,
+    ) -> Result<Ty, InferError> {
+        const MAX_TUPLE_ARITY: usize = 8;
+
+        if elems.len() > MAX_TUPLE_ARITY {
+            return Err(InferError::TupleArityLimit {
+                max: MAX_TUPLE_ARITY,
+                found: elems.len(),
+                span,
+            });
+        }
+
+        // Empty tuple is Unit
+        if elems.is_empty() {
+            return Ok(Ty::unit());
+        }
+
+        // Single element - just return that type (not a tuple)
+        if elems.len() == 1 {
+            return self.infer_expr_ctx(ctx, &elems[0]);
+        }
+
+        // Infer each element type
+        let tys: Vec<Ty> = elems
+            .iter()
+            .map(|e| self.infer_expr_ctx(ctx, e))
+            .collect::<Result<_, _>>()?;
+
+        Ok(Ty::Tuple(tys))
+    }
+
+    /// Infer type of struct construction expression
+    fn infer_struct_expr(
+        &mut self,
+        ctx: &CheckContext,
+        path: &Path,
+        fields: &[FieldInit],
+        span: Span,
+    ) -> Result<Ty, InferError> {
+        let struct_name = path_to_string(path);
+
+        let registry = ctx
+            .adt_registry
+            .as_ref()
+            .ok_or_else(|| InferError::NotImplemented {
+                msg: "Struct expressions require ADT registry".to_string(),
+                span,
+            })?;
+
+        let adt_def = registry
+            .get(&struct_name)
+            .ok_or_else(|| InferError::UnknownType {
+                name: struct_name.clone(),
+                span,
+            })?;
+
+        // Must be a struct
+        let struct_fields = adt_def.fields().ok_or_else(|| InferError::NotImplemented {
+            msg: format!("'{}' is not a struct", struct_name),
+            span,
+        })?;
+
+        // Instantiate type parameters with fresh vars
+        let type_args: Vec<Ty> = (0..adt_def.arity()).map(|_| self.fresh_var()).collect();
+        let struct_ty = Ty::adt(&struct_name, type_args.clone());
+
+        // Create substitution for type parameters
+        let type_subst: HashMap<TypeVarId, Ty> = (0..adt_def.arity())
+            .map(|i| (TypeVarId(i as u32), type_args[i].clone()))
+            .collect();
+
+        // Track which fields are provided
+        let mut seen_fields = HashSet::new();
+
+        for field in fields {
+            let field_name = &field.name.text;
+
+            // Check for duplicate fields
+            if !seen_fields.insert(field_name.clone()) {
+                return Err(InferError::DuplicateField {
+                    field: field_name.clone(),
+                    span: field.span,
+                });
+            }
+
+            // Find field in struct definition
+            let field_def = struct_fields
+                .iter()
+                .find(|f| f.name == *field_name)
+                .ok_or_else(|| InferError::UnknownField {
+                    struct_name: struct_name.clone(),
+                    field: field_name.clone(),
+                    span: field.span,
+                })?;
+
+            // Substitute type parameters in field type
+            let expected_ty = substitute_type_vars(&field_def.ty, &type_subst);
+
+            // Infer field value type and constrain
+            let value_ty = self.infer_expr_ctx(ctx, &field.value)?;
+            self.add_constraint(Constraint::Equal(value_ty, expected_ty, field.span));
+        }
+
+        // Check all required fields are provided
+        for field_def in struct_fields {
+            if !seen_fields.contains(&field_def.name) {
+                return Err(InferError::MissingField {
+                    struct_name: struct_name.clone(),
+                    field: field_def.name.clone(),
+                    span,
+                });
+            }
+        }
+
+        Ok(struct_ty)
+    }
+
+    /// Infer type of path expression (enum constructor)
+    fn infer_path_expr(&mut self, ctx: &CheckContext, path: &Path) -> Result<Ty, InferError> {
+        let name = path_to_string(path);
+
+        // Look up in environment - could be an enum constructor
+        if let Some(scheme) = ctx.env.get(&name) {
+            return Ok(scheme.instantiate(|| self.fresh_var()));
+        }
+
+        // Not found
+        Err(InferError::UnknownVariable {
+            name,
+            span: path.span,
+        })
+    }
+}
+
+/// A binding created by a pattern
+#[derive(Clone, Debug)]
+pub struct PatternBinding {
+    pub name: String,
+    pub ty: Ty,
+    pub span: Span,
+}
+
+/// Check if a pattern is irrefutable (always matches).
+/// Irrefutable patterns are required for let bindings.
+fn is_irrefutable(ctx: &CheckContext, pat: &Pat) -> bool {
+    match pat {
+        // Wildcard and identifier patterns always match
+        Pat::Wildcard(_) | Pat::Ident(_) => true,
+
+        // Literals are always refutable (match specific values)
+        Pat::Literal(_, _) => false,
+
+        // Tuple patterns are irrefutable if all sub-patterns are irrefutable
+        Pat::Tuple(pats, _) => pats.iter().all(|p| is_irrefutable(ctx, p)),
+
+        // Struct patterns are irrefutable (single constructor)
+        // Sub-patterns must also be irrefutable
+        Pat::Struct { fields, .. } => fields.iter().all(|f| is_irrefutable(ctx, &f.pat)),
+
+        // Variant patterns are only irrefutable if the enum has exactly one variant
+        Pat::Variant { path, fields, .. } => {
+            // Extract enum name from path (first segment)
+            if let Some(enum_name) = path.segments.first() {
+                if let Some(registry) = &ctx.adt_registry {
+                    if let Some(adt) = registry.get(&enum_name.text) {
+                        if let Some(variants) = adt.variants() {
+                            // Single-variant enum is irrefutable
+                            if variants.len() == 1 {
+                                // All sub-patterns must also be irrefutable
+                                return fields.iter().all(|p| is_irrefutable(ctx, p));
+                            }
+                        }
+                    }
+                }
+            }
+            false
+        }
+    }
+}
+
+/// Convert a Path to a string (e.g., "Option::Some")
+fn path_to_string(path: &Path) -> String {
+    path.segments
+        .iter()
+        .map(|i| i.text.as_str())
+        .collect::<Vec<_>>()
+        .join("::")
+}
+
+/// Substitute type variables in a type
+fn substitute_type_vars(ty: &Ty, subst: &HashMap<TypeVarId, Ty>) -> Ty {
+    match ty {
+        Ty::Var(v) => subst.get(v).cloned().unwrap_or_else(|| ty.clone()),
+        Ty::Const(_) | Ty::Never => ty.clone(),
+        Ty::Arrow(params, ret) => Ty::arrow(
+            params
+                .iter()
+                .map(|t| substitute_type_vars(t, subst))
+                .collect(),
+            substitute_type_vars(ret, subst),
+        ),
+        Ty::Tuple(tys) => Ty::Tuple(tys.iter().map(|t| substitute_type_vars(t, subst)).collect()),
+        Ty::List(t) => Ty::List(Box::new(substitute_type_vars(t, subst))),
+        Ty::Adt { name, args } => Ty::Adt {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|t| substitute_type_vars(t, subst))
+                .collect(),
+        },
+    }
 }
 
 /// Convert a TypeExpr from the AST to an inference type
@@ -547,6 +1215,24 @@ fn ty_from_type_expr(te: &strata_ast::ast::TypeExpr) -> Result<Ty, InferError> {
             let ret_ty = ty_from_type_expr(ret)?;
             Ok(Ty::arrow(param_tys, ret_ty))
         }
+        // Generic type annotations in block-level let bindings not yet supported.
+        // Workaround: rely on type inference. See Known Limitations in IMPLEMENTED.md.
+        TypeExpr::App { base, span, .. } => {
+            let name = base
+                .iter()
+                .map(|i| i.text.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
+            Err(InferError::NotImplemented {
+                msg: format!("Generic types not yet implemented: {}", name),
+                span: *span,
+            })
+        }
+        // Tuple type annotations in block-level let bindings not yet supported.
+        TypeExpr::Tuple(_, span) => Err(InferError::NotImplemented {
+            msg: "Tuple types not yet implemented".to_string(),
+            span: *span,
+        }),
     }
 }
 

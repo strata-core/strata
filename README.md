@@ -1,6 +1,6 @@
 # Strata — Layered Safety by Design
 
-> **Status:** Early development (v0.0.7.0) — Issue 006 + hardening complete
+> **Status:** Early development — Issue 007 (ADTs & Pattern Matching) complete
 > **License:** MIT
 > **Language:** Rust
 
@@ -16,7 +16,7 @@ Strata is a general-purpose, strongly typed programming language designed for **
 - **Deterministic replay** — Seedable RNG/Time with audit logs
 - **Multi-target** — Native AOT, bytecode VM, WASM/WASI
 
-## Current Status (v0.0.7.0)
+## Current Status
 
 ✅ **Working:**
 - Parser with full expression and control flow support
@@ -31,21 +31,30 @@ Strata is a general-purpose, strongly typed programming language designed for **
 - While loops with proper control flow
 - Return statements propagating through nested blocks
 - Mutable bindings with mutability checking
+- Structs with named fields (nominal)
+- Enums with unit + tuple variants
+- Generic type parameters on ADTs (`Option<T>`, `Result<T, E>`)
+- Match expressions with exhaustiveness checking (Maranget algorithm)
+- Nested patterns, wildcards, literals, variable binders
+- Unreachable arm detection (warnings)
+- Irrefutable destructuring let (`let (a, b) = pair;`)
+- Capability-in-ADT ban (safety infrastructure)
 - `Ty::Never` with correct bottom semantics
 - Sound type system with real error messages
 - Scope-stack evaluator with closures
 - CLI with automatic type checking
-- **163 comprehensive tests** (all passing)
+- **292 comprehensive tests** (all passing)
 
-✅ **Security Hardening (v0.0.7.0):**
+✅ **Security Hardening:**
 - DoS protection: source size (1MB), token count (200K), parser nesting (512), inference depth (512), eval call depth (1000)
 - Soundness: `Ty::Never` only unifies with itself
 - Removed panic!/expect() from type checker
 - Universal lexer error surfacing
+- Parser depth guards balanced on all error paths
 
 📋 **Next Up:**
-- Issue 007: ADTs, generics, pattern matching
-- Issue 008-010: Effect system, capabilities, profiles
+- Issue 008: Effect system enforcement
+- Issue 009-010: Capabilities, profiles
 
 **Target v0.1:** November 2026 - February 2027
 
@@ -62,18 +71,14 @@ cargo build --workspace
 # Run an example
 cargo run -p strata-cli -- examples/add.strata
 
-# Run tests (163 tests)
+# Run tests (292 tests)
 cargo test --workspace
 ```
 
 ## Example Code
 
 ```strata
-// Current (v0.0.7.0) - Blocks & control flow work!
-fn max(a: Int, b: Int) -> Int {
-    if a > b { a } else { b }
-}
-
+// Functions & control flow
 fn factorial(n: Int) -> Int {
     if n <= 1 { 1 } else { n * factorial(n - 1) }
 }
@@ -88,9 +93,7 @@ fn sum_to(n: Int) -> Int {
     total
 }
 
-let result = sum_to(10);  // 55
-
-// Mutual recursion works!
+// Mutual recursion
 fn is_even(n: Int) -> Bool {
     if n == 0 { true } else { is_odd(n - 1) }
 }
@@ -100,8 +103,29 @@ fn is_odd(n: Int) -> Bool {
 
 // Polymorphic identity function
 fn identity(x) { x }
-let a = identity(42);     // Works with Int
-let b = identity(true);   // Works with Bool
+let a = identity(42);     // Int
+let b = identity(true);   // Bool
+```
+
+```strata
+// ADTs & pattern matching
+enum Option<T> {
+    Some(T),
+    None,
+}
+
+fn unwrap_or(opt: Option<Int>, default: Int) -> Int {
+    match opt {
+        Option::Some(x) => x,
+        Option::None => default,
+    }
+}
+
+let pair = (10, 20);
+let (a, b) = pair;
+
+struct Point { x: Int, y: Int }
+let p = Point { x: a, y: b };
 ```
 
 ## Development
@@ -110,7 +134,7 @@ let b = identity(true);   // Works with Bool
 # Build everything
 cargo build --workspace
 
-# Run all tests (163 tests)
+# Run all tests (292 tests)
 cargo test --workspace
 
 # Run clippy (enforced in CI)
@@ -123,8 +147,8 @@ cargo fmt
 ## Roadmap
 
 **Phase 1 (Complete):** Parser, AST, basic type checking ✅
-**Phase 2 (Current):** Functions ✅, hardening ✅, blocks ✅, ADTs (next)
-**Phase 3:** Effect system, capabilities, profiles
+**Phase 2 (Complete):** Functions ✅, hardening ✅, blocks ✅, ADTs ✅
+**Phase 3 (Current):** Effect system, capabilities, profiles
 **Phase 4:** Runtime, stdlib, WASM compilation, replay
 **Phase 5:** Tooling, docs, killer demos, v0.1 launch  
 

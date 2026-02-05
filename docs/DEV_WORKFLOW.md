@@ -68,6 +68,22 @@ Update these files as appropriate:
 
 **Why:** Future-you (or contributors) will thank you for clear, accurate documentation.
 
+#### Stale Comment Sweep
+
+```bash
+grep -rn 'TODO\|FIXME\|HACK\|XXX' crates/ --include='*.rs'
+```
+
+Resolve or update any that reference completed work.
+
+#### Debug Print Check
+
+```bash
+grep -rn 'println!\|dbg!\|eprintln!' crates/ --include='*.rs'
+```
+
+Remove any non-intentional output.
+
 ---
 
 ### 3. Commit Checklist

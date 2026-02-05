@@ -135,3 +135,101 @@ fn test_never_unifies_with_never() {
     let mut u = Unifier::new();
     u.unify(&Ty::Never, &Ty::Never).unwrap();
 }
+
+// ============ ADT Unification Tests ============
+
+/// Test that ADTs with the same name and no args unify
+#[test]
+fn test_adt_same_name_no_args() {
+    let mut u = Unifier::new();
+    let point1 = Ty::adt0("Point");
+    let point2 = Ty::adt0("Point");
+    u.unify(&point1, &point2).unwrap();
+}
+
+/// Test that ADTs with different names don't unify
+#[test]
+fn test_adt_different_names() {
+    let mut u = Unifier::new();
+    let point = Ty::adt0("Point");
+    let vec = Ty::adt0("Vec");
+    assert!(u.unify(&point, &vec).is_err());
+}
+
+/// Test that ADTs with same name and matching args unify
+#[test]
+fn test_adt_same_name_same_args() {
+    let mut u = Unifier::new();
+    let opt1 = Ty::adt("Option", vec![Ty::int()]);
+    let opt2 = Ty::adt("Option", vec![Ty::int()]);
+    u.unify(&opt1, &opt2).unwrap();
+}
+
+/// Test that ADTs unify when args contain type variables
+#[test]
+fn test_adt_with_type_vars() {
+    let mut u = Unifier::new();
+    let v = Ty::var(TypeVarId(0));
+    let opt1 = Ty::adt("Option", vec![v.clone()]);
+    let opt2 = Ty::adt("Option", vec![Ty::int()]);
+    u.unify(&opt1, &opt2).unwrap();
+
+    // The variable should be bound to Int
+    assert_eq!(u.subst().apply(&v), Ty::int());
+}
+
+/// Test that ADTs with different arg counts don't unify
+#[test]
+fn test_adt_different_arity() {
+    let mut u = Unifier::new();
+    let result1 = Ty::adt("Result", vec![Ty::int()]);
+    let result2 = Ty::adt("Result", vec![Ty::int(), Ty::string()]);
+    let err = u.unify(&result1, &result2).unwrap_err();
+    assert!(matches!(err, TypeError::Arity { .. }));
+}
+
+/// Test that ADTs with same name but different args don't unify
+#[test]
+fn test_adt_same_name_different_args() {
+    let mut u = Unifier::new();
+    let opt1 = Ty::adt("Option", vec![Ty::int()]);
+    let opt2 = Ty::adt("Option", vec![Ty::string()]);
+    assert!(u.unify(&opt1, &opt2).is_err());
+}
+
+/// Test occurs check for ADT type arguments
+#[test]
+fn test_adt_occurs_check() {
+    let mut u = Unifier::new();
+    let v = Ty::var(TypeVarId(0));
+    let opt = Ty::adt("Option", vec![v.clone()]);
+    // Trying to unify v with Option<v> should fail (infinite type)
+    let err = u.unify(&v, &opt).unwrap_err();
+    assert!(matches!(err, TypeError::Occurs { .. }));
+}
+
+/// Test ADT Display formatting
+#[test]
+fn test_adt_display() {
+    assert_eq!(format!("{}", Ty::adt0("Point")), "Point");
+    assert_eq!(
+        format!("{}", Ty::adt("Option", vec![Ty::int()])),
+        "Option<Int>"
+    );
+    assert_eq!(
+        format!("{}", Ty::adt("Result", vec![Ty::int(), Ty::string()])),
+        "Result<Int, String>"
+    );
+}
+
+/// Test nested ADT unification
+#[test]
+fn test_adt_nested() {
+    let mut u = Unifier::new();
+    let v = Ty::var(TypeVarId(0));
+    // Option<Option<Int>> should unify with Option<Option<v>>
+    let nested1 = Ty::adt("Option", vec![Ty::adt("Option", vec![Ty::int()])]);
+    let nested2 = Ty::adt("Option", vec![Ty::adt("Option", vec![v.clone()])]);
+    u.unify(&nested1, &nested2).unwrap();
+    assert_eq!(u.subst().apply(&v), Ty::int());
+}

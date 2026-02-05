@@ -22,6 +22,51 @@ pub mod ast {
     pub enum Item {
         Let(LetDecl),
         Fn(FnDecl),
+        Struct(StructDef),
+        Enum(EnumDef),
+    }
+
+    /// Struct definition: `struct Point<T> { x: T, y: T }`
+    #[derive(Debug, Clone, Serialize)]
+    pub struct StructDef {
+        pub name: Ident,
+        pub type_params: Vec<Ident>,
+        pub fields: Vec<Field>,
+        pub span: Span,
+    }
+
+    /// Field in a struct: `name: Type`
+    #[derive(Debug, Clone, Serialize)]
+    pub struct Field {
+        pub name: Ident,
+        pub ty: TypeExpr,
+        pub span: Span,
+    }
+
+    /// Enum definition: `enum Option<T> { Some(T), None }`
+    #[derive(Debug, Clone, Serialize)]
+    pub struct EnumDef {
+        pub name: Ident,
+        pub type_params: Vec<Ident>,
+        pub variants: Vec<Variant>,
+        pub span: Span,
+    }
+
+    /// Enum variant: `Some(T)` or `None`
+    #[derive(Debug, Clone, Serialize)]
+    pub struct Variant {
+        pub name: Ident,
+        pub fields: VariantFields,
+        pub span: Span,
+    }
+
+    /// Variant field types
+    #[derive(Debug, Clone, Serialize)]
+    pub enum VariantFields {
+        /// Unit variant: `None`
+        Unit,
+        /// Tuple variant: `Some(T, U)`
+        Tuple(Vec<TypeExpr>),
     }
 
     #[derive(Debug, Serialize)]
@@ -56,13 +101,22 @@ pub mod ast {
 
     #[derive(Debug, Clone, Serialize)]
     pub enum TypeExpr {
+        /// Simple or qualified path: `Int`, `Option::Some`
         Path(Vec<Ident>, Span),
+        /// Function type: `fn(A, B) -> R`
         Arrow {
-            // fn(A, B, C) -> R
             params: Vec<TypeExpr>,
             ret: Box<TypeExpr>,
             span: Span,
         },
+        /// Generic type application: `Option<T>`, `Result<T, E>`
+        App {
+            base: Vec<Ident>,
+            args: Vec<TypeExpr>,
+            span: Span,
+        },
+        /// Tuple type: `(A, B, C)`
+        Tuple(Vec<TypeExpr>, Span),
     }
 
     impl TypeExpr {
@@ -71,6 +125,8 @@ pub mod ast {
             match self {
                 TypeExpr::Path(_, span) => *span,
                 TypeExpr::Arrow { span, .. } => *span,
+                TypeExpr::App { span, .. } => *span,
+                TypeExpr::Tuple(_, span) => *span,
             }
         }
     }
@@ -78,10 +134,11 @@ pub mod ast {
     /// Statement within a block
     #[derive(Debug, Clone, Serialize)]
     pub enum Stmt {
-        /// Local variable binding: `let x = e;` or `let mut x: T = e;`
+        /// Local variable binding: `let x = e;` or `let (a, b) = e;`
+        /// Pattern must be irrefutable (use match for refutable patterns)
         Let {
             mutable: bool,
-            name: Ident,
+            pat: Pat,
             ty: Option<TypeExpr>,
             value: Expr,
             span: Span,
@@ -105,6 +162,88 @@ pub mod ast {
         pub stmts: Vec<Stmt>,
         /// Optional tail expression (no trailing semicolon) - the block's value
         pub tail: Option<Box<Expr>>,
+        pub span: Span,
+    }
+
+    /// Qualified path: `Option::Some`, `Result::Ok`
+    #[derive(Debug, Clone, Serialize)]
+    pub struct Path {
+        pub segments: Vec<Ident>,
+        pub span: Span,
+    }
+
+    impl Path {
+        /// Create a single-segment path
+        pub fn single(ident: Ident) -> Self {
+            let span = ident.span;
+            Self {
+                segments: vec![ident],
+                span,
+            }
+        }
+
+        /// Get the full path as a string (e.g., "Option::Some")
+        pub fn as_str(&self) -> String {
+            self.segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join("::")
+        }
+    }
+
+    /// Pattern for match arms and destructuring
+    #[derive(Debug, Clone, Serialize)]
+    pub enum Pat {
+        /// Wildcard pattern: `_`
+        Wildcard(Span),
+        /// Variable binding: `x`, `_unused`
+        Ident(Ident),
+        /// Literal pattern: `0`, `true`, `"hello"`
+        Literal(Lit, Span),
+        /// Tuple pattern: `(a, b)`
+        Tuple(Vec<Pat>, Span),
+        /// Struct pattern: `Point { x, y: 0 }`
+        Struct {
+            path: Path,
+            fields: Vec<PatField>,
+            span: Span,
+        },
+        /// Variant pattern: `Option::Some(x)`, `Option::None`
+        Variant {
+            path: Path,
+            fields: Vec<Pat>,
+            span: Span,
+        },
+    }
+
+    impl Pat {
+        /// Get the span of this pattern
+        pub fn span(&self) -> Span {
+            match self {
+                Pat::Wildcard(span) => *span,
+                Pat::Ident(ident) => ident.span,
+                Pat::Literal(_, span) => *span,
+                Pat::Tuple(_, span) => *span,
+                Pat::Struct { span, .. } => *span,
+                Pat::Variant { span, .. } => *span,
+            }
+        }
+    }
+
+    /// Field in a struct pattern: `x` or `x: pat`
+    #[derive(Debug, Clone, Serialize)]
+    pub struct PatField {
+        pub name: Ident,
+        pub pat: Pat,
+        pub span: Span,
+    }
+
+    /// Match arm: `Pattern => body`
+    #[derive(Debug, Clone, Serialize)]
+    pub struct MatchArm {
+        pub pat: Pat,
+        pub body: Expr,
         pub span: Span,
     }
 
@@ -147,6 +286,34 @@ pub mod ast {
             body: Block,
             span: Span,
         },
+        /// Match expression: `match expr { pat => body, ... }`
+        Match {
+            scrutinee: Box<Expr>,
+            arms: Vec<MatchArm>,
+            span: Span,
+        },
+        /// Tuple expression: `(a, b, c)`
+        Tuple {
+            elems: Vec<Expr>,
+            span: Span,
+        },
+        /// Struct construction: `Point { x: 1, y: 2 }`
+        StructExpr {
+            path: Path,
+            fields: Vec<FieldInit>,
+            span: Span,
+        },
+        /// Variant construction: `Option::Some(x)`
+        /// (Handled as Call on a path, but explicit for clarity in some cases)
+        PathExpr(Path),
+    }
+
+    /// Field initialization in struct expression: `x: expr` or `x` (shorthand)
+    #[derive(Debug, Clone, Serialize)]
+    pub struct FieldInit {
+        pub name: Ident,
+        pub value: Expr,
+        pub span: Span,
     }
 
     impl Expr {
@@ -162,6 +329,10 @@ pub mod ast {
                 Expr::Block(block) => block.span,
                 Expr::If { span, .. } => *span,
                 Expr::While { span, .. } => *span,
+                Expr::Match { span, .. } => *span,
+                Expr::Tuple { span, .. } => *span,
+                Expr::StructExpr { span, .. } => *span,
+                Expr::PathExpr(path) => path.span,
             }
         }
     }

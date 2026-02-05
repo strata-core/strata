@@ -1,0 +1,39 @@
+// Option enum example - demonstrates Option type and pattern matching
+
+enum Option<T> {
+    Some(T),
+    None
+}
+
+fn unwrap_or(opt: Option<Int>, default: Int) -> Int {
+    match opt {
+        Option::Some(x) => x,
+        Option::None => default
+    }
+}
+
+fn is_some(opt: Option<Int>) -> Bool {
+    match opt {
+        Option::Some(_) => true,
+        Option::None => false
+    }
+}
+
+fn map_option(opt: Option<Int>, f: fn(Int) -> Int) -> Option<Int> {
+    match opt {
+        Option::Some(x) => Option::Some(f(x)),
+        Option::None => Option::None
+    }
+}
+
+// Test the functions
+fn main() -> Int {
+    let some_val = Option::Some(42);
+    let none_val = Option::None;
+
+    // unwrap_or returns the value or default
+    let x = unwrap_or(some_val, 0);  // 42
+    let y = unwrap_or(none_val, 0);  // 0
+
+    x + y
+}

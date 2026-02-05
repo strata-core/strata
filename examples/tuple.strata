@@ -1,0 +1,51 @@
+// Tuple example - demonstrates tuple construction and pattern matching
+
+fn swap(pair: (Int, Int)) -> (Int, Int) {
+    match pair {
+        (a, b) => (b, a)
+    }
+}
+
+fn first(pair: (Int, Int)) -> Int {
+    match pair {
+        (x, _) => x
+    }
+}
+
+fn second(pair: (Int, Int)) -> Int {
+    match pair {
+        (_, y) => y
+    }
+}
+
+fn add_pair(pair: (Int, Int)) -> Int {
+    match pair {
+        (a, b) => a + b
+    }
+}
+
+// Nested tuples
+fn sum_nested(t: ((Int, Int), Int)) -> Int {
+    match t {
+        ((a, b), c) => a + b + c
+    }
+}
+
+// Test the functions
+fn main() -> Int {
+    let pair = (10, 20);
+    let swapped = swap(pair);
+
+    // first(swapped) should be 20, second(swapped) should be 10
+    let x = first(swapped);   // 20
+    let y = second(swapped);  // 10
+
+    // add_pair should sum the elements
+    let sum = add_pair(pair); // 30
+
+    // nested tuple sum
+    let nested = ((1, 2), 3);
+    let nested_sum = sum_nested(nested); // 6
+
+    x + y + sum + nested_sum  // 20 + 10 + 30 + 6 = 66
+}

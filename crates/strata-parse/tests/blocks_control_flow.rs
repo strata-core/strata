@@ -1,4 +1,4 @@
-use strata_ast::ast::{Block, Expr, Item, Lit, Stmt};
+use strata_ast::ast::{Block, Expr, Item, Lit, Pat, Stmt};
 use strata_parse::parse_str;
 
 /// Helper: parse a let statement and return its value expression
@@ -85,11 +85,14 @@ fn let_mut_statement() {
         panic!("expected Block");
     };
     assert_eq!(block.stmts.len(), 1);
-    let Stmt::Let { mutable, name, .. } = &block.stmts[0] else {
+    let Stmt::Let { mutable, pat, .. } = &block.stmts[0] else {
         panic!("expected Let statement");
     };
     assert!(*mutable);
-    assert_eq!(name.text, "x");
+    let Pat::Ident(ident) = pat else {
+        panic!("expected Ident pattern");
+    };
+    assert_eq!(ident.text, "x");
 }
 
 #[test]
@@ -99,11 +102,14 @@ fn let_immutable_statement() {
         panic!("expected Block");
     };
     assert_eq!(block.stmts.len(), 1);
-    let Stmt::Let { mutable, name, .. } = &block.stmts[0] else {
+    let Stmt::Let { mutable, pat, .. } = &block.stmts[0] else {
         panic!("expected Let statement");
     };
     assert!(!*mutable);
-    assert_eq!(name.text, "x");
+    let Pat::Ident(ident) = pat else {
+        panic!("expected Ident pattern");
+    };
+    assert_eq!(ident.text, "x");
 }
 
 #[test]
@@ -113,13 +119,16 @@ fn let_mut_with_type_annotation() {
         panic!("expected Block");
     };
     let Stmt::Let {
-        mutable, name, ty, ..
+        mutable, pat, ty, ..
     } = &block.stmts[0]
     else {
         panic!("expected Let statement");
     };
     assert!(*mutable);
-    assert_eq!(name.text, "x");
+    let Pat::Ident(ident) = pat else {
+        panic!("expected Ident pattern");
+    };
+    assert_eq!(ident.text, "x");
     assert!(ty.is_some());
 }
 
