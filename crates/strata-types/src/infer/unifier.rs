@@ -102,6 +102,23 @@ impl Unifier {
 
             (Ty::List(x), Ty::List(y)) => self.unify(&x, &y),
 
+            // ADT unification: names must match, then unify type arguments
+            (Ty::Adt { name: n1, args: a1 }, Ty::Adt { name: n2, args: a2 }) => {
+                if n1 != n2 {
+                    return Err(TypeError::Mismatch(Ty::adt(n1, a1), Ty::adt(n2, a2)));
+                }
+                if a1.len() != a2.len() {
+                    return Err(TypeError::Arity {
+                        left: a1.len(),
+                        right: a2.len(),
+                    });
+                }
+                for (arg1, arg2) in a1.iter().zip(a2.iter()) {
+                    self.unify(arg1, arg2)?;
+                }
+                Ok(())
+            }
+
             (x, y) => Err(TypeError::Mismatch(x, y)),
         }
     }
@@ -131,5 +148,6 @@ fn occurs_in(v: TypeVarId, ty: &Ty, subst: &Subst) -> bool {
         }
         Ty::Tuple(ref xs) => xs.iter().any(|x| occurs_in(v, x, subst)),
         Ty::List(ref x) => occurs_in(v, x, subst),
+        Ty::Adt { ref args, .. } => args.iter().any(|a| occurs_in(v, a, subst)),
     }
 }

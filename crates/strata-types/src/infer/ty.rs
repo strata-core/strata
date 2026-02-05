@@ -40,9 +40,16 @@ pub enum Ty {
     Const(TyConst),
     Arrow(Vec<Ty>, Box<Ty>),
     /// Heterogeneous, fixed-length tuple: (t0, t1, ..., tn)
+    /// Note: Tuples are nominal and desugar to Tuple2<A,B> etc. in type checking.
     Tuple(Vec<Ty>),
     /// Homogeneous list: [elem]
     List(Box<Ty>),
+    /// Algebraic data type (struct or enum) with type arguments
+    /// Examples: Option<Int>, Point, Result<T, E>
+    Adt {
+        name: String,
+        args: Vec<Ty>,
+    },
     /// The bottom type for diverging expressions (return, panic, etc.)
     /// Never unifies with any type (as a subtype of all types).
     /// This prevents "unreachable code" unification failures.
@@ -96,6 +103,24 @@ impl Ty {
     pub fn list(elem: Ty) -> Self {
         Ty::List(Box::new(elem))
     }
+
+    /// Create an ADT type with the given name and type arguments
+    #[inline]
+    pub fn adt(name: impl Into<String>, args: Vec<Ty>) -> Self {
+        Ty::Adt {
+            name: name.into(),
+            args,
+        }
+    }
+
+    /// Create an ADT type with no type arguments
+    #[inline]
+    pub fn adt0(name: impl Into<String>) -> Self {
+        Ty::Adt {
+            name: name.into(),
+            args: vec![],
+        }
+    }
 }
 
 // Optional but nice: readable printing for errors
@@ -137,6 +162,20 @@ impl fmt::Display for Ty {
                 write!(f, ")")
             }
             Ty::List(x) => write!(f, "[{}]", x),
+            Ty::Adt { name, args } => {
+                if args.is_empty() {
+                    write!(f, "{}", name)
+                } else {
+                    write!(f, "{}<", name)?;
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", arg)?;
+                    }
+                    write!(f, ">")
+                }
+            }
             Ty::Never => write!(f, "!"),
         }
     }
@@ -217,6 +256,13 @@ pub fn free_vars(ty: &Ty) -> HashSet<TypeVarId> {
             set
         }
         Ty::List(ty) => free_vars(ty),
+        Ty::Adt { args, .. } => {
+            let mut set = HashSet::new();
+            for arg in args {
+                set.extend(free_vars(arg));
+            }
+            set
+        }
     }
 }
 

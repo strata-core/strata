@@ -2,7 +2,8 @@ use crate::lexer::Lexer;
 use crate::token::{Tok, TokKind};
 use anyhow::{bail, Result};
 use strata_ast::ast::{
-    BinOp, Block, Expr, FnDecl, Ident, Item, LetDecl, Lit, Module, Param, Stmt, TypeExpr, UnOp,
+    BinOp, Block, EnumDef, Expr, Field, FieldInit, FnDecl, Ident, Item, LetDecl, Lit, MatchArm,
+    Module, Param, Pat, PatField, Path, Stmt, StructDef, TypeExpr, UnOp, Variant, VariantFields,
 };
 use strata_ast::span::Span;
 
@@ -112,6 +113,8 @@ impl<'a> Parser<'a> {
         match self.cur.kind {
             TokKind::KwLet => Ok(Item::Let(self.parse_let()?)),
             TokKind::KwFn => Ok(Item::Fn(self.parse_fn_decl()?)),
+            TokKind::KwStruct => Ok(Item::Struct(self.parse_struct_def()?)),
+            TokKind::KwEnum => Ok(Item::Enum(self.parse_enum_def()?)),
             _ => bail!("unexpected token at top level: {:?}", self.cur.kind),
         }
     }
@@ -189,6 +192,151 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Parse a struct definition: `struct Name<T, U> { field: Type, ... }`
+    fn parse_struct_def(&mut self) -> Result<StructDef> {
+        let start = self.cur.span.start;
+        self.expect(TokKind::KwStruct)?;
+        let name = self.parse_ident()?;
+
+        // Parse optional type parameters: <T, U>
+        let type_params = self.parse_type_params()?;
+
+        // Parse fields: { field: Type, ... }
+        self.expect(TokKind::LBrace)?;
+        let fields = self.parse_struct_fields()?;
+        let end_tok = self.expect(TokKind::RBrace)?;
+
+        Ok(StructDef {
+            name,
+            type_params,
+            fields,
+            span: Span {
+                start,
+                end: end_tok.span.end,
+            },
+        })
+    }
+
+    /// Parse optional type parameters: `<T, U>`
+    fn parse_type_params(&mut self) -> Result<Vec<Ident>> {
+        if !matches!(self.cur.kind, TokKind::Lt) {
+            return Ok(vec![]);
+        }
+        self.bump(); // consume '<'
+
+        let mut params = Vec::new();
+        if !matches!(self.cur.kind, TokKind::Gt) {
+            params.push(self.parse_ident()?);
+            while matches!(self.cur.kind, TokKind::Comma) {
+                self.bump();
+                params.push(self.parse_ident()?);
+            }
+        }
+        self.expect(TokKind::Gt)?;
+        Ok(params)
+    }
+
+    /// Parse struct fields: `field: Type, ...`
+    fn parse_struct_fields(&mut self) -> Result<Vec<Field>> {
+        let mut fields = Vec::new();
+
+        while !matches!(self.cur.kind, TokKind::RBrace) {
+            let field_start = self.cur.span.start;
+            let name = self.parse_ident()?;
+            self.expect(TokKind::Colon)?;
+            let ty = self.parse_type()?;
+            let ty_end = ty.span().end;
+
+            fields.push(Field {
+                name,
+                ty,
+                span: Span {
+                    start: field_start,
+                    end: ty_end,
+                },
+            });
+
+            // Optional trailing comma
+            if matches!(self.cur.kind, TokKind::Comma) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+
+        Ok(fields)
+    }
+
+    /// Parse an enum definition: `enum Name<T> { Variant1, Variant2(T), ... }`
+    fn parse_enum_def(&mut self) -> Result<EnumDef> {
+        let start = self.cur.span.start;
+        self.expect(TokKind::KwEnum)?;
+        let name = self.parse_ident()?;
+
+        // Parse optional type parameters
+        let type_params = self.parse_type_params()?;
+
+        // Parse variants: { Variant1, Variant2(T), ... }
+        self.expect(TokKind::LBrace)?;
+        let variants = self.parse_enum_variants()?;
+        let end_tok = self.expect(TokKind::RBrace)?;
+
+        Ok(EnumDef {
+            name,
+            type_params,
+            variants,
+            span: Span {
+                start,
+                end: end_tok.span.end,
+            },
+        })
+    }
+
+    /// Parse enum variants: `Variant1, Variant2(T), ...`
+    fn parse_enum_variants(&mut self) -> Result<Vec<Variant>> {
+        let mut variants = Vec::new();
+
+        while !matches!(self.cur.kind, TokKind::RBrace) {
+            let var_start = self.cur.span.start;
+            let name = self.parse_ident()?;
+
+            // Check for tuple fields: Variant(T, U)
+            let (fields, var_end) = if matches!(self.cur.kind, TokKind::LParen) {
+                self.bump(); // consume '('
+                let mut tys = Vec::new();
+                if !matches!(self.cur.kind, TokKind::RParen) {
+                    tys.push(self.parse_type()?);
+                    while matches!(self.cur.kind, TokKind::Comma) {
+                        self.bump();
+                        tys.push(self.parse_type()?);
+                    }
+                }
+                let rparen = self.expect(TokKind::RParen)?;
+                (VariantFields::Tuple(tys), rparen.span.end)
+            } else {
+                (VariantFields::Unit, name.span.end)
+            };
+
+            variants.push(Variant {
+                name,
+                fields,
+                span: Span {
+                    start: var_start,
+                    end: var_end,
+                },
+            });
+
+            // Optional trailing comma
+            if matches!(self.cur.kind, TokKind::Comma) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+
+        Ok(variants)
+    }
+
     fn parse_type(&mut self) -> Result<TypeExpr> {
         let start = self.cur.span.start;
 
@@ -221,8 +369,55 @@ impl<'a> Parser<'a> {
             });
         }
 
-        // Otherwise, it's a simple path type: Int, Bool, Foo::Bar, etc.
-        // Grammar: Ident ('::' Ident)*
+        // Check if it's a tuple type: (A, B, C)
+        if matches!(self.cur.kind, TokKind::LParen) {
+            self.bump(); // consume '('
+
+            // Empty tuple: ()
+            if matches!(self.cur.kind, TokKind::RParen) {
+                let end_tok = self.expect(TokKind::RParen)?;
+                return Ok(TypeExpr::Tuple(
+                    vec![],
+                    Span {
+                        start,
+                        end: end_tok.span.end,
+                    },
+                ));
+            }
+
+            // Parse first element
+            let first = self.parse_type()?;
+
+            // Check if it's a single-element parenthesized type or a tuple
+            if matches!(self.cur.kind, TokKind::RParen) {
+                // Single element in parens - just return the inner type
+                // (We don't have 1-tuples)
+                self.bump();
+                return Ok(first);
+            }
+
+            // It's a tuple with multiple elements
+            let mut elems = vec![first];
+            while matches!(self.cur.kind, TokKind::Comma) {
+                self.bump();
+                if matches!(self.cur.kind, TokKind::RParen) {
+                    break; // trailing comma
+                }
+                elems.push(self.parse_type()?);
+            }
+            let end_tok = self.expect(TokKind::RParen)?;
+
+            return Ok(TypeExpr::Tuple(
+                elems,
+                Span {
+                    start,
+                    end: end_tok.span.end,
+                },
+            ));
+        }
+
+        // Otherwise, it's a path type (possibly with generic args): Int, Option<T>, Foo::Bar<A, B>
+        // Grammar: Ident ('::' Ident)* ('<' Type (',' Type)* '>')?
         let mut segs = vec![self.parse_ident()?];
 
         // Parse qualified path: Foo::Bar::Baz
@@ -231,7 +426,30 @@ impl<'a> Parser<'a> {
             segs.push(self.parse_ident()?);
         }
 
-        // Use last segment's span end
+        // Check for generic type arguments: <T, U>
+        if matches!(self.cur.kind, TokKind::Lt) {
+            self.bump(); // consume '<'
+            let mut args = Vec::new();
+            if !matches!(self.cur.kind, TokKind::Gt) {
+                args.push(self.parse_type()?);
+                while matches!(self.cur.kind, TokKind::Comma) {
+                    self.bump();
+                    args.push(self.parse_type()?);
+                }
+            }
+            let end_tok = self.expect(TokKind::Gt)?;
+
+            return Ok(TypeExpr::App {
+                base: segs,
+                args,
+                span: Span {
+                    start,
+                    end: end_tok.span.end,
+                },
+            });
+        }
+
+        // Simple path without generics
         let last_seg_end = segs.last().map(|s| s.span.end).unwrap_or(start);
 
         Ok(TypeExpr::Path(
@@ -281,6 +499,330 @@ impl<'a> Parser<'a> {
             name,
             ty,
             span: Span { start, end },
+        })
+    }
+
+    // ======= match expressions and patterns =======
+
+    /// Parse a match expression: `match expr { pat => body, ... }`
+    fn parse_match(&mut self) -> Result<Expr> {
+        let start = self.cur.span.start;
+        self.expect(TokKind::KwMatch)?;
+
+        let scrutinee = Box::new(self.parse_expr_bp(0)?);
+
+        self.expect(TokKind::LBrace)?;
+
+        let mut arms = Vec::new();
+        while !matches!(self.cur.kind, TokKind::RBrace) {
+            arms.push(self.parse_match_arm()?);
+
+            // Optional trailing comma
+            if matches!(self.cur.kind, TokKind::Comma) {
+                self.bump();
+            }
+        }
+
+        let end_tok = self.expect(TokKind::RBrace)?;
+
+        Ok(Expr::Match {
+            scrutinee,
+            arms,
+            span: Span {
+                start,
+                end: end_tok.span.end,
+            },
+        })
+    }
+
+    /// Parse a match arm: `pat => body`
+    fn parse_match_arm(&mut self) -> Result<MatchArm> {
+        let pat = self.parse_pattern()?;
+        let pat_start = pat.span().start;
+
+        self.expect(TokKind::FatArrow)?;
+
+        let body = self.parse_expr_bp(0)?;
+        let body_end = body.span().end;
+
+        Ok(MatchArm {
+            pat,
+            body,
+            span: Span {
+                start: pat_start,
+                end: body_end,
+            },
+        })
+    }
+
+    /// Parse a pattern
+    fn parse_pattern(&mut self) -> Result<Pat> {
+        self.enter_nesting()?;
+        let result = self.parse_pattern_inner();
+        self.exit_nesting();
+        result
+    }
+
+    fn parse_pattern_inner(&mut self) -> Result<Pat> {
+        let start = self.cur.span.start;
+
+        // Tuple pattern: (a, b)
+        if matches!(self.cur.kind, TokKind::LParen) {
+            self.bump(); // consume '('
+
+            // Empty tuple: ()
+            if matches!(self.cur.kind, TokKind::RParen) {
+                let end_tok = self.expect(TokKind::RParen)?;
+                return Ok(Pat::Tuple(
+                    vec![],
+                    Span {
+                        start,
+                        end: end_tok.span.end,
+                    },
+                ));
+            }
+
+            // Parse first pattern
+            let first = self.parse_pattern()?;
+
+            // Check if it's a single-element parenthesized pattern or a tuple
+            if matches!(self.cur.kind, TokKind::RParen) {
+                // Single element in parens - just return the inner pattern
+                self.bump();
+                return Ok(first);
+            }
+
+            // It's a tuple with multiple elements
+            let mut elems = vec![first];
+            while matches!(self.cur.kind, TokKind::Comma) {
+                self.bump();
+                if matches!(self.cur.kind, TokKind::RParen) {
+                    break; // trailing comma
+                }
+                elems.push(self.parse_pattern()?);
+            }
+            let end_tok = self.expect(TokKind::RParen)?;
+
+            return Ok(Pat::Tuple(
+                elems,
+                Span {
+                    start,
+                    end: end_tok.span.end,
+                },
+            ));
+        }
+
+        // Literal patterns: numbers, strings, booleans
+        match &self.cur.kind {
+            TokKind::Int(v) => {
+                let v = *v;
+                let span = self.cur.span;
+                self.bump();
+                return Ok(Pat::Literal(Lit::Int(v), span));
+            }
+            TokKind::Float(v) => {
+                let v = *v;
+                let span = self.cur.span;
+                self.bump();
+                return Ok(Pat::Literal(Lit::Float(v), span));
+            }
+            TokKind::Str(s) => {
+                let s = s.clone();
+                let span = self.cur.span;
+                self.bump();
+                return Ok(Pat::Literal(Lit::Str(s), span));
+            }
+            TokKind::KwTrue => {
+                let span = self.cur.span;
+                self.bump();
+                return Ok(Pat::Literal(Lit::Bool(true), span));
+            }
+            TokKind::KwFalse => {
+                let span = self.cur.span;
+                self.bump();
+                return Ok(Pat::Literal(Lit::Bool(false), span));
+            }
+            TokKind::KwNil => {
+                let span = self.cur.span;
+                self.bump();
+                return Ok(Pat::Literal(Lit::Nil, span));
+            }
+            _ => {}
+        }
+
+        // Identifier patterns: _, x, Foo, Foo::Bar, etc.
+        if let TokKind::Ident(s) = &self.cur.kind {
+            // Wildcard pattern: _
+            if s == "_" {
+                let span = self.cur.span;
+                self.bump();
+                return Ok(Pat::Wildcard(span));
+            }
+
+            // Parse path: Foo or Foo::Bar
+            let mut segs = vec![self.parse_ident()?];
+            while matches!(self.cur.kind, TokKind::ColonColon) {
+                self.bump(); // consume ::
+                segs.push(self.parse_ident()?);
+            }
+
+            let path_end = segs.last().map(|s| s.span.end).unwrap_or(start);
+            let path = Path {
+                segments: segs.clone(),
+                span: Span {
+                    start,
+                    end: path_end,
+                },
+            };
+
+            // Check if it's a variant pattern with fields: Option::Some(x)
+            if matches!(self.cur.kind, TokKind::LParen) {
+                self.bump(); // consume '('
+
+                let mut fields = Vec::new();
+                if !matches!(self.cur.kind, TokKind::RParen) {
+                    fields.push(self.parse_pattern()?);
+                    while matches!(self.cur.kind, TokKind::Comma) {
+                        self.bump();
+                        if matches!(self.cur.kind, TokKind::RParen) {
+                            break; // trailing comma
+                        }
+                        fields.push(self.parse_pattern()?);
+                    }
+                }
+                let rparen = self.expect(TokKind::RParen)?;
+
+                return Ok(Pat::Variant {
+                    path,
+                    fields,
+                    span: Span {
+                        start,
+                        end: rparen.span.end,
+                    },
+                });
+            }
+
+            // Check if it's a struct pattern: Point { x, y }
+            if matches!(self.cur.kind, TokKind::LBrace) {
+                self.bump(); // consume '{'
+
+                let mut fields = Vec::new();
+                while !matches!(self.cur.kind, TokKind::RBrace) {
+                    let field = self.parse_pat_field()?;
+                    fields.push(field);
+
+                    if matches!(self.cur.kind, TokKind::Comma) {
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
+                let rbrace = self.expect(TokKind::RBrace)?;
+
+                return Ok(Pat::Struct {
+                    path,
+                    fields,
+                    span: Span {
+                        start,
+                        end: rbrace.span.end,
+                    },
+                });
+            }
+
+            // If it's a single identifier (not a path), it's a variable binding
+            if segs.len() == 1 {
+                return Ok(Pat::Ident(segs.into_iter().next().unwrap()));
+            }
+
+            // Otherwise it's a unit variant: Option::None
+            return Ok(Pat::Variant {
+                path,
+                fields: vec![],
+                span: Span {
+                    start,
+                    end: path_end,
+                },
+            });
+        }
+
+        bail!("unexpected token in pattern: {:?}", self.cur.kind)
+    }
+
+    /// Parse a struct pattern field: `x` or `x: pat`
+    fn parse_pat_field(&mut self) -> Result<PatField> {
+        let field_start = self.cur.span.start;
+        let name = self.parse_ident()?;
+
+        // Check for explicit pattern: x: pat
+        let (pat, field_end) = if matches!(self.cur.kind, TokKind::Colon) {
+            self.bump(); // consume ':'
+            let p = self.parse_pattern()?;
+            let end = p.span().end;
+            (p, end)
+        } else {
+            // Shorthand: x means x: x
+            let end = name.span.end;
+            (Pat::Ident(name.clone()), end)
+        };
+
+        Ok(PatField {
+            name,
+            pat,
+            span: Span {
+                start: field_start,
+                end: field_end,
+            },
+        })
+    }
+
+    /// Parse struct expression: `Point { x: 1, y: 2 }` or `Point { x, y }` (shorthand)
+    fn parse_struct_expr(&mut self, path: Path) -> Result<Expr> {
+        let start = path.span.start;
+        self.expect(TokKind::LBrace)?;
+
+        let mut fields = Vec::new();
+        while !matches!(self.cur.kind, TokKind::RBrace) {
+            let field_start = self.cur.span.start;
+            let name = self.parse_ident()?;
+
+            // Check for explicit value: x: expr
+            let (value, field_end) = if matches!(self.cur.kind, TokKind::Colon) {
+                self.bump(); // consume ':'
+                let expr = self.parse_expr_bp(0)?;
+                let end = expr.span().end;
+                (expr, end)
+            } else {
+                // Shorthand: x means x: x
+                let end = name.span.end;
+                (Expr::Var(name.clone()), end)
+            };
+
+            fields.push(FieldInit {
+                name,
+                value,
+                span: Span {
+                    start: field_start,
+                    end: field_end,
+                },
+            });
+
+            // Optional comma
+            if matches!(self.cur.kind, TokKind::Comma) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+
+        let end_tok = self.expect(TokKind::RBrace)?;
+
+        Ok(Expr::StructExpr {
+            path,
+            fields,
+            span: Span {
+                start,
+                end: end_tok.span.end,
+            },
         })
     }
 
@@ -376,12 +918,13 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parse a let statement: `let [mut] name [: Type] = expr;`
+    /// Parse a let statement: `let [mut] pattern [: Type] = expr;`
+    /// Supports destructuring patterns like `let (a, b) = expr;`
     fn parse_let_stmt(&mut self) -> Result<Stmt> {
         let start = self.cur.span.start;
         self.expect(TokKind::KwLet)?;
 
-        // Check for `mut` keyword
+        // Check for `mut` keyword (only valid for simple identifier patterns)
         let mutable = if matches!(self.cur.kind, TokKind::KwMut) {
             self.bump();
             true
@@ -389,15 +932,25 @@ impl<'a> Parser<'a> {
             false
         };
 
-        let name = self.parse_ident()?;
+        // Parse the pattern
+        let pat = self.parse_pattern()?;
 
-        // Optional type annotation
+        // Optional type annotation (only valid for simple identifier patterns)
         let ty = if matches!(self.cur.kind, TokKind::Colon) {
+            // Type annotations only allowed for simple identifier patterns
+            if !matches!(pat, Pat::Ident(_)) {
+                bail!("type annotations not supported for destructuring patterns");
+            }
             self.bump();
             Some(self.parse_type()?)
         } else {
             None
         };
+
+        // `mut` only valid for simple identifier patterns
+        if mutable && !matches!(pat, Pat::Ident(_)) {
+            bail!("`mut` not supported for destructuring patterns");
+        }
 
         self.expect(TokKind::Eq)?;
         let value = self.parse_expr_bp(0)?;
@@ -405,7 +958,7 @@ impl<'a> Parser<'a> {
 
         Ok(Stmt::Let {
             mutable,
-            name,
+            pat,
             ty,
             value,
             span: Span {
@@ -577,8 +1130,9 @@ impl<'a> Parser<'a> {
             TokKind::Bang => {
                 self.enter_nesting()?;
                 self.bump();
-                let inner = self.parse_expr_bp(100)?;
+                let result = self.parse_expr_bp(100);
                 self.exit_nesting();
+                let inner = result?;
                 let span = Span {
                     start: tok_span.start,
                     end: node_end(&inner),
@@ -592,8 +1146,9 @@ impl<'a> Parser<'a> {
             TokKind::Minus => {
                 self.enter_nesting()?;
                 self.bump();
-                let inner = self.parse_expr_bp(100)?;
+                let result = self.parse_expr_bp(100);
                 self.exit_nesting();
+                let inner = result?;
                 let span = Span {
                     start: tok_span.start,
                     end: node_end(&inner),
@@ -632,24 +1187,70 @@ impl<'a> Parser<'a> {
             }
 
             TokKind::Ident(_) => {
-                let id = self.parse_ident()?;
-                Ok(Expr::Var(id))
+                let start = tok_span.start;
+                let first_id = self.parse_ident()?;
+
+                // Check for qualified path: Foo::Bar
+                if matches!(self.cur.kind, TokKind::ColonColon) {
+                    let mut segs = vec![first_id];
+                    while matches!(self.cur.kind, TokKind::ColonColon) {
+                        self.bump(); // consume ::
+                        segs.push(self.parse_ident()?);
+                    }
+
+                    let path_end = segs.last().map(|s| s.span.end).unwrap_or(start);
+                    let path = Path {
+                        segments: segs,
+                        span: Span {
+                            start,
+                            end: path_end,
+                        },
+                    };
+
+                    // Check if it's a struct construction: Foo::Bar { ... }
+                    // Only allow struct expressions for qualified paths to avoid ambiguity
+                    // with blocks (e.g., `if x { }` vs `x { field: val }`)
+                    if matches!(self.cur.kind, TokKind::LBrace) {
+                        return self.parse_struct_expr(path);
+                    }
+
+                    // Otherwise it's a path expression (e.g., enum constructor)
+                    return Ok(Expr::PathExpr(path));
+                }
+
+                // For unqualified identifiers, check for struct expression using heuristic:
+                // If the identifier starts with uppercase (type name convention) and
+                // is followed by `{`, parse as struct expression.
+                // This avoids ambiguity with blocks like `if x { }` since those use
+                // lowercase variable names.
+                if matches!(self.cur.kind, TokKind::LBrace) {
+                    let is_type_name = first_id
+                        .text
+                        .chars()
+                        .next()
+                        .map(|c| c.is_ascii_uppercase())
+                        .unwrap_or(false);
+                    if is_type_name {
+                        let path = Path {
+                            segments: vec![first_id],
+                            span: Span {
+                                start,
+                                end: start + 1, // Will be updated by parse_struct_expr
+                            },
+                        };
+                        return self.parse_struct_expr(path);
+                    }
+                }
+
+                // Simple variable
+                Ok(Expr::Var(first_id))
             }
 
             TokKind::LParen => {
                 self.enter_nesting()?;
-                let start = tok_span.start;
-                self.bump(); // '('
-                let inner = self.parse_expr_bp(0)?;
-                let end_tok = self.expect(TokKind::RParen)?;
+                let result = self.parse_paren_or_tuple(tok_span.start);
                 self.exit_nesting();
-                Ok(Expr::Paren {
-                    inner: Box::new(inner),
-                    span: Span {
-                        start,
-                        end: end_tok.span.end,
-                    },
-                })
+                result
             }
 
             // Block expression
@@ -674,10 +1275,70 @@ impl<'a> Parser<'a> {
                 e
             }
 
+            // Match expression
+            TokKind::KwMatch => {
+                self.enter_nesting()?;
+                let e = self.parse_match();
+                self.exit_nesting();
+                e
+            }
+
             // Lexer error - surface it with proper context
             TokKind::Error(msg) => bail!("Lexer error at {:?}: {}", self.cur.span, msg),
 
             _ => bail!("unexpected token in expression: {:?}", tok_kind),
+        }
+    }
+
+    /// Parse parenthesized expression or tuple. Called after '(' is consumed.
+    /// Nesting depth is managed by the caller.
+    fn parse_paren_or_tuple(&mut self, start: u32) -> Result<Expr> {
+        self.bump(); // '('
+
+        // Empty tuple: ()
+        if matches!(self.cur.kind, TokKind::RParen) {
+            let end_tok = self.expect(TokKind::RParen)?;
+            return Ok(Expr::Tuple {
+                elems: vec![],
+                span: Span {
+                    start,
+                    end: end_tok.span.end,
+                },
+            });
+        }
+
+        // Parse first expression
+        let first = self.parse_expr_bp(0)?;
+
+        // Check if it's a tuple or parenthesized expression
+        if matches!(self.cur.kind, TokKind::Comma) {
+            // It's a tuple
+            let mut elems = vec![first];
+            while matches!(self.cur.kind, TokKind::Comma) {
+                self.bump();
+                if matches!(self.cur.kind, TokKind::RParen) {
+                    break; // trailing comma
+                }
+                elems.push(self.parse_expr_bp(0)?);
+            }
+            let end_tok = self.expect(TokKind::RParen)?;
+            Ok(Expr::Tuple {
+                elems,
+                span: Span {
+                    start,
+                    end: end_tok.span.end,
+                },
+            })
+        } else {
+            // Parenthesized expression
+            let end_tok = self.expect(TokKind::RParen)?;
+            Ok(Expr::Paren {
+                inner: Box::new(first),
+                span: Span {
+                    start,
+                    end: end_tok.span.end,
+                },
+            })
         }
     }
 
@@ -713,6 +1374,10 @@ fn node_start(e: &Expr) -> u32 {
         Expr::Block(block) => block.span.start,
         Expr::If { span, .. } => span.start,
         Expr::While { span, .. } => span.start,
+        Expr::Match { span, .. } => span.start,
+        Expr::Tuple { span, .. } => span.start,
+        Expr::StructExpr { span, .. } => span.start,
+        Expr::PathExpr(path) => path.span.start,
     }
 }
 
@@ -727,5 +1392,9 @@ fn node_end(e: &Expr) -> u32 {
         Expr::Block(block) => block.span.end,
         Expr::If { span, .. } => span.end,
         Expr::While { span, .. } => span.end,
+        Expr::Match { span, .. } => span.end,
+        Expr::Tuple { span, .. } => span.end,
+        Expr::StructExpr { span, .. } => span.end,
+        Expr::PathExpr(path) => path.span.end,
     }
 }

@@ -1,0 +1,55 @@
+// Struct example - demonstrates struct definition, construction, and pattern matching
+
+struct Point {
+    x: Int,
+    y: Int
+}
+
+fn origin() -> Point {
+    Point { x: 0, y: 0 }
+}
+
+fn make_point(x: Int, y: Int) -> Point {
+    Point { x: x, y: y }
+}
+
+fn get_x(p: Point) -> Int {
+    match p {
+        Point { x, y: _ } => x
+    }
+}
+
+fn get_y(p: Point) -> Int {
+    match p {
+        Point { x: _, y } => y
+    }
+}
+
+fn add_points(p1: Point, p2: Point) -> Point {
+    match p1 {
+        Point { x: x1, y: y1 } => match p2 {
+            Point { x: x2, y: y2 } => Point { x: x1 + x2, y: y1 + y2 }
+        }
+    }
+}
+
+fn manhattan_distance(p: Point) -> Int {
+    match p {
+        Point { x, y } => {
+            let abs_x = if x < 0 { 0 - x } else { x };
+            let abs_y = if y < 0 { 0 - y } else { y };
+            abs_x + abs_y
+        }
+    }
+}
+
+// Test the functions
+fn main() -> Int {
+    let p1 = make_point(3, 4);
+    let p2 = origin();
+
+    let sum_point = add_points(p1, p2);
+    let dist = manhattan_distance(p1);  // |3| + |4| = 7
+
+    get_x(sum_point) + get_y(sum_point) + dist  // 3 + 4 + 7 = 14
+}

@@ -1,0 +1,38 @@
+// Result enum example - demonstrates error handling with Result type
+
+enum Result<T, E> {
+    Ok(T),
+    Err(E)
+}
+
+fn unwrap_result(r: Result<Int, String>) -> Int {
+    match r {
+        Result::Ok(x) => x,
+        Result::Err(_) => 0  // Default on error
+    }
+}
+
+fn is_ok(r: Result<Int, String>) -> Bool {
+    match r {
+        Result::Ok(_) => true,
+        Result::Err(_) => false
+    }
+}
+
+fn map_result(r: Result<Int, String>, f: fn(Int) -> Int) -> Result<Int, String> {
+    match r {
+        Result::Ok(x) => Result::Ok(f(x)),
+        Result::Err(e) => Result::Err(e)
+    }
+}
+
+// Test the functions
+fn main() -> Int {
+    let ok_val = Result::Ok(100);
+    let err_val = Result::Err("error");
+
+    let x = unwrap_result(ok_val);   // 100
+    let y = unwrap_result(err_val);  // 0
+
+    x + y
+}

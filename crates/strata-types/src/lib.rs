@@ -2,8 +2,10 @@
 #![warn(clippy::dbg_macro, clippy::todo, clippy::unimplemented)]
 #![forbid(unsafe_code)]
 
+pub mod adt;
 mod checker;
 mod effects;
+pub mod exhaustive;
 mod profile;
 mod types;
 

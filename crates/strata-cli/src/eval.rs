@@ -5,8 +5,10 @@
 
 use anyhow::{bail, Result};
 use std::cell::Cell;
-use std::collections::HashMap;
-use strata_ast::ast::{BinOp, Block, Expr, Lit, Module, Stmt, UnOp};
+use std::collections::{HashMap, HashSet};
+use strata_ast::ast::{
+    BinOp, Block, Expr, FieldInit, Lit, MatchArm, Module, Pat, Path, Stmt, UnOp,
+};
 
 /// Maximum call depth to prevent stack overflow from deep recursion
 const MAX_CALL_DEPTH: u32 = 1000;
@@ -30,6 +32,19 @@ pub enum Value {
         body: Block,
         env: Env,
     },
+    /// Tuple value: (a, b, c)
+    Tuple(Vec<Value>),
+    /// Struct value: Point { x: 1, y: 2 }
+    Struct {
+        name: String,
+        fields: HashMap<String, Value>,
+    },
+    /// Enum variant value: Some(42) or None
+    Variant {
+        enum_name: String,
+        variant_name: String,
+        fields: Vec<Value>,
+    },
 }
 
 impl std::fmt::Display for Value {
@@ -41,6 +56,49 @@ impl std::fmt::Display for Value {
             Value::Str(s) => write!(f, "\"{s}\""),
             Value::Unit => write!(f, "()"),
             Value::Closure { params, .. } => write!(f, "<fn({})>", params.join(", ")),
+            Value::Tuple(elems) => {
+                write!(f, "(")?;
+                for (i, elem) in elems.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", elem)?;
+                }
+                write!(f, ")")
+            }
+            Value::Struct { name, fields } => {
+                write!(f, "{} {{ ", name)?;
+                let mut first = true;
+                // Sort fields for deterministic output
+                let mut sorted_fields: Vec<_> = fields.iter().collect();
+                sorted_fields.sort_by_key(|(k, _)| *k);
+                for (field_name, value) in sorted_fields {
+                    if !first {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", field_name, value)?;
+                    first = false;
+                }
+                write!(f, " }}")
+            }
+            Value::Variant {
+                enum_name,
+                variant_name,
+                fields,
+            } => {
+                write!(f, "{}::{}", enum_name, variant_name)?;
+                if !fields.is_empty() {
+                    write!(f, "(")?;
+                    for (i, field) in fields.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", field)?;
+                    }
+                    write!(f, ")")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -114,6 +172,17 @@ impl Env {
         }
         self.scopes.pop();
         Ok(())
+    }
+
+    /// Execute a closure with a new scope that is automatically popped on exit.
+    /// This ensures the scope is popped even if the closure returns an error.
+    pub fn with_scope<T>(&mut self, f: impl FnOnce(&mut Env) -> Result<T>) -> Result<T> {
+        self.push_scope();
+        let result = f(self);
+        // Always pop scope, even on error - ignore pop_scope result since
+        // we know we just pushed a scope so it can't fail
+        let _ = self.pop_scope();
+        result
     }
 
     /// Define a new variable in the current scope
@@ -203,6 +272,21 @@ pub fn eval_module(m: &Module) -> Result<()> {
         }
     }
 
+    // Pass 5: Call main() if it exists and print result
+    if let Some(main_val) = env.get("main") {
+        if let Value::Closure {
+            body,
+            env: closure_env,
+            ..
+        } = main_val.clone()
+        {
+            let mut call_env = closure_env;
+            let result = eval_block(&mut call_env, &body)?;
+            let v = result.into_value();
+            println!("main() = {}", v);
+        }
+    }
+
     Ok(())
 }
 
@@ -257,6 +341,20 @@ pub fn eval_expr(env: &mut Env, expr: &Expr) -> Result<ControlFlow> {
 
         // While loop
         Expr::While { cond, body, .. } => eval_while(env, cond, body),
+
+        // Match expression
+        Expr::Match {
+            scrutinee, arms, ..
+        } => eval_match(env, scrutinee, arms),
+
+        // Tuple expression
+        Expr::Tuple { elems, .. } => eval_tuple(env, elems),
+
+        // Struct expression
+        Expr::StructExpr { path, fields, .. } => eval_struct_expr(env, path, fields),
+
+        // Path expression (enum constructor)
+        Expr::PathExpr(path) => eval_path_expr(env, path),
     }
 }
 
@@ -401,27 +499,23 @@ fn eval_binary(env: &mut Env, op: &BinOp, lhs: &Expr, rhs: &Expr) -> Result<Cont
 
 /// Evaluate a block expression
 pub fn eval_block(env: &mut Env, block: &Block) -> Result<ControlFlow> {
-    env.push_scope();
-
-    // Evaluate each statement
-    for stmt in &block.stmts {
-        let cf = eval_stmt(env, stmt)?;
-        // Propagate returns early
-        if cf.is_return() {
-            env.pop_scope()?;
-            return Ok(cf);
+    env.with_scope(|env| {
+        // Evaluate each statement
+        for stmt in &block.stmts {
+            let cf = eval_stmt(env, stmt)?;
+            // Propagate returns early
+            if cf.is_return() {
+                return Ok(cf);
+            }
         }
-    }
 
-    // Evaluate tail expression if present
-    let result = if let Some(ref tail) = block.tail {
-        eval_expr(env, tail)?
-    } else {
-        ControlFlow::Value(Value::Unit)
-    };
-
-    env.pop_scope()?;
-    Ok(result)
+        // Evaluate tail expression if present
+        if let Some(ref tail) = block.tail {
+            eval_expr(env, tail)
+        } else {
+            Ok(ControlFlow::Value(Value::Unit))
+        }
+    })
 }
 
 /// Evaluate a statement
@@ -429,7 +523,7 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<ControlFlow> {
     match stmt {
         Stmt::Let {
             mutable,
-            name,
+            pat,
             value,
             ..
         } => {
@@ -438,7 +532,21 @@ fn eval_stmt(env: &mut Env, stmt: &Stmt) -> Result<ControlFlow> {
                 return Ok(cf);
             }
             let v = cf.into_value();
-            env.define(name.text.clone(), v, *mutable);
+
+            // Match pattern against value to get bindings
+            // Pattern should always match (irrefutability checked by type checker)
+            let bindings = match_pattern(pat, &v).ok_or_else(|| {
+                anyhow::anyhow!("pattern match failed (should be caught by type checker)")
+            })?;
+
+            // Check for duplicate bindings (defensive - type checker should catch this)
+            check_duplicate_bindings(&bindings)?;
+
+            // Define all bindings with the same mutability
+            for (name, val) in bindings {
+                env.define(name, val, *mutable);
+            }
+
             Ok(ControlFlow::Value(Value::Unit))
         }
 
@@ -569,7 +677,34 @@ fn eval_call_inner(env: &mut Env, callee: &Expr, args: &[Expr]) -> Result<Contro
         return Ok(cf);
     }
 
-    let closure = match cf.into_value() {
+    let callee_val = cf.into_value();
+
+    // Handle variant constructor calls: Option::Some(42)
+    if let Value::Variant {
+        enum_name,
+        variant_name,
+        fields: existing_fields,
+    } = &callee_val
+    {
+        if existing_fields.is_empty() {
+            // This is a unit variant being called as a constructor
+            let mut field_values = Vec::new();
+            for arg in args {
+                let cf = eval_expr(env, arg)?;
+                if cf.is_return() {
+                    return Ok(cf);
+                }
+                field_values.push(cf.into_value());
+            }
+            return Ok(ControlFlow::Value(Value::Variant {
+                enum_name: enum_name.clone(),
+                variant_name: variant_name.clone(),
+                fields: field_values,
+            }));
+        }
+    }
+
+    let closure = match callee_val {
         Value::Closure { params, body, env } => (params, body, env),
         v => bail!("cannot call non-function value: {}", v),
     };
@@ -640,6 +775,224 @@ fn eval_call_inner(env: &mut Env, callee: &Expr, args: &[Expr]) -> Result<Contro
     Ok(ControlFlow::Value(result.into_value()))
 }
 
+/// Evaluate a tuple expression
+fn eval_tuple(env: &mut Env, elems: &[Expr]) -> Result<ControlFlow> {
+    // Empty tuple is unit
+    if elems.is_empty() {
+        return Ok(ControlFlow::Value(Value::Unit));
+    }
+
+    // Single element is unwrapped (not a tuple)
+    if elems.len() == 1 {
+        return eval_expr(env, &elems[0]);
+    }
+
+    // Evaluate each element
+    let mut values = Vec::new();
+    for elem in elems {
+        let cf = eval_expr(env, elem)?;
+        if cf.is_return() {
+            return Ok(cf);
+        }
+        values.push(cf.into_value());
+    }
+
+    Ok(ControlFlow::Value(Value::Tuple(values)))
+}
+
+/// Evaluate a struct expression
+fn eval_struct_expr(env: &mut Env, path: &Path, fields: &[FieldInit]) -> Result<ControlFlow> {
+    let struct_name = path.as_str();
+
+    let mut field_values = HashMap::new();
+    for field in fields {
+        let cf = eval_expr(env, &field.value)?;
+        if cf.is_return() {
+            return Ok(cf);
+        }
+        field_values.insert(field.name.text.clone(), cf.into_value());
+    }
+
+    Ok(ControlFlow::Value(Value::Struct {
+        name: struct_name,
+        fields: field_values,
+    }))
+}
+
+/// Evaluate a path expression (enum constructor)
+fn eval_path_expr(env: &mut Env, path: &Path) -> Result<ControlFlow> {
+    let segments = &path.segments;
+
+    if segments.len() == 2 {
+        // Enum::Variant format - unit constructor
+        let enum_name = segments[0].text.clone();
+        let variant_name = segments[1].text.clone();
+        return Ok(ControlFlow::Value(Value::Variant {
+            enum_name,
+            variant_name,
+            fields: vec![],
+        }));
+    }
+
+    // Single segment - look up in environment (might be a function or variable)
+    if segments.len() == 1 {
+        let name = &segments[0].text;
+        match env.get(name) {
+            Some(v) => return Ok(ControlFlow::Value(v.clone())),
+            None => bail!("undefined: {}", name),
+        }
+    }
+
+    bail!("invalid path expression: {}", path.as_str())
+}
+
+/// Evaluate a match expression
+fn eval_match(env: &mut Env, scrutinee: &Expr, arms: &[MatchArm]) -> Result<ControlFlow> {
+    // Evaluate the scrutinee
+    let cf = eval_expr(env, scrutinee)?;
+    if cf.is_return() {
+        return Ok(cf);
+    }
+    let value = cf.into_value();
+
+    // Try each arm in order
+    for arm in arms {
+        if let Some(bindings) = match_pattern(&arm.pat, &value) {
+            // Check for duplicate bindings (defensive - type checker should catch this)
+            check_duplicate_bindings(&bindings)?;
+
+            // Pattern matched - evaluate arm body with bindings in new scope
+            return env.with_scope(|env| {
+                for (name, val) in bindings {
+                    env.define(name, val, false);
+                }
+                eval_expr(env, &arm.body)
+            });
+        }
+    }
+
+    // No arm matched (should be caught by exhaustiveness checking)
+    bail!("non-exhaustive match: no pattern matched value {}", value)
+}
+
+/// Try to match a pattern against a value, returning bindings if successful
+fn match_pattern(pat: &Pat, value: &Value) -> Option<Vec<(String, Value)>> {
+    match pat {
+        Pat::Wildcard(_) => Some(vec![]),
+
+        Pat::Ident(ident) => Some(vec![(ident.text.clone(), value.clone())]),
+
+        Pat::Literal(lit, _) => match (lit, value) {
+            (Lit::Int(n), Value::Int(v)) if *n == *v => Some(vec![]),
+            (Lit::Float(n), Value::Float(v)) if *n == *v => Some(vec![]),
+            (Lit::Bool(b), Value::Bool(v)) if *b == *v => Some(vec![]),
+            (Lit::Str(s), Value::Str(v)) if s == v => Some(vec![]),
+            (Lit::Nil, Value::Unit) => Some(vec![]),
+            _ => None,
+        },
+
+        Pat::Tuple(pats, _) => {
+            // Special case: empty tuple pattern () matches Unit
+            if pats.is_empty() {
+                return if matches!(value, Value::Unit) {
+                    Some(vec![])
+                } else {
+                    None
+                };
+            }
+            if let Value::Tuple(values) = value {
+                if pats.len() != values.len() {
+                    return None;
+                }
+                let mut bindings = Vec::new();
+                for (pat, val) in pats.iter().zip(values.iter()) {
+                    if let Some(mut sub_bindings) = match_pattern(pat, val) {
+                        bindings.append(&mut sub_bindings);
+                    } else {
+                        return None;
+                    }
+                }
+                Some(bindings)
+            } else {
+                None
+            }
+        }
+
+        Pat::Struct { path, fields, .. } => {
+            if let Value::Struct {
+                name,
+                fields: value_fields,
+            } = value
+            {
+                if path.as_str() != *name {
+                    return None;
+                }
+                let mut bindings = Vec::new();
+                for pat_field in fields {
+                    let field_value = value_fields.get(&pat_field.name.text)?;
+                    if let Some(mut sub_bindings) = match_pattern(&pat_field.pat, field_value) {
+                        bindings.append(&mut sub_bindings);
+                    } else {
+                        return None;
+                    }
+                }
+                Some(bindings)
+            } else {
+                None
+            }
+        }
+
+        Pat::Variant { path, fields, .. } => {
+            if let Value::Variant {
+                enum_name,
+                variant_name,
+                fields: value_fields,
+            } = value
+            {
+                // Check if the pattern path matches the variant
+                let pattern_path = path.as_str();
+                let value_path = format!("{}::{}", enum_name, variant_name);
+                if pattern_path != value_path {
+                    return None;
+                }
+
+                // Check field count
+                if fields.len() != value_fields.len() {
+                    return None;
+                }
+
+                // Match each field pattern
+                let mut bindings = Vec::new();
+                for (pat, val) in fields.iter().zip(value_fields.iter()) {
+                    if let Some(mut sub_bindings) = match_pattern(pat, val) {
+                        bindings.append(&mut sub_bindings);
+                    } else {
+                        return None;
+                    }
+                }
+                Some(bindings)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Check for duplicate bindings and return an error if found.
+/// This is a defensive check - the type checker should catch duplicates.
+fn check_duplicate_bindings(bindings: &[(String, Value)]) -> Result<()> {
+    let mut seen = HashSet::new();
+    for (name, _) in bindings {
+        if !seen.insert(name) {
+            bail!(
+                "duplicate binding '{}' in pattern (should be caught by type checker)",
+                name
+            );
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -680,7 +1033,7 @@ mod tests {
         let block = Block {
             stmts: vec![Stmt::Let {
                 mutable: false,
-                name: ident("x"),
+                pat: Pat::Ident(ident("x")),
                 ty: None,
                 value: Expr::Lit(Lit::Int(1), sp()),
                 span: sp(),
@@ -704,7 +1057,7 @@ mod tests {
         let block = Block {
             stmts: vec![Stmt::Let {
                 mutable: false,
-                name: ident("x"),
+                pat: Pat::Ident(ident("x")),
                 ty: None,
                 value: Expr::Lit(Lit::Int(1), sp()),
                 span: sp(),
@@ -768,7 +1121,7 @@ mod tests {
             stmts: vec![
                 Stmt::Let {
                     mutable: true,
-                    name: ident("x"),
+                    pat: Pat::Ident(ident("x")),
                     ty: None,
                     value: Expr::Lit(Lit::Int(1), sp()),
                     span: sp(),
@@ -794,7 +1147,7 @@ mod tests {
             stmts: vec![
                 Stmt::Let {
                     mutable: false,
-                    name: ident("x"),
+                    pat: Pat::Ident(ident("x")),
                     ty: None,
                     value: Expr::Lit(Lit::Int(1), sp()),
                     span: sp(),
@@ -820,7 +1173,7 @@ mod tests {
             stmts: vec![
                 Stmt::Let {
                     mutable: false,
-                    name: ident("x"),
+                    pat: Pat::Ident(ident("x")),
                     ty: None,
                     value: Expr::Lit(Lit::Int(1), sp()),
                     span: sp(),
@@ -829,7 +1182,7 @@ mod tests {
                     expr: Expr::Block(Block {
                         stmts: vec![Stmt::Let {
                             mutable: false,
-                            name: ident("x"),
+                            pat: Pat::Ident(ident("x")),
                             ty: None,
                             value: Expr::Lit(Lit::Int(2), sp()),
                             span: sp(),
@@ -857,14 +1210,14 @@ mod tests {
             stmts: vec![
                 Stmt::Let {
                     mutable: true,
-                    name: ident("sum"),
+                    pat: Pat::Ident(ident("sum")),
                     ty: None,
                     value: Expr::Lit(Lit::Int(0), sp()),
                     span: sp(),
                 },
                 Stmt::Let {
                     mutable: true,
-                    name: ident("i"),
+                    pat: Pat::Ident(ident("i")),
                     ty: None,
                     value: Expr::Lit(Lit::Int(0), sp()),
                     span: sp(),
@@ -1038,5 +1391,414 @@ mod tests {
         };
         let cf = eval_expr(&mut env, &call_expr).unwrap();
         assert!(matches!(cf, ControlFlow::Value(Value::Int(120))));
+    }
+
+    // =========================================================================
+    // Phase 6: Tuple, Struct, Variant, Match tests
+    // =========================================================================
+
+    #[test]
+    fn test_eval_tuple() {
+        // (1, 2, 3) evaluates to a tuple
+        let mut env = Env::new();
+        let expr = Expr::Tuple {
+            elems: vec![
+                Expr::Lit(Lit::Int(1), sp()),
+                Expr::Lit(Lit::Int(2), sp()),
+                Expr::Lit(Lit::Int(3), sp()),
+            ],
+            span: sp(),
+        };
+        let cf = eval_expr(&mut env, &expr).unwrap();
+        if let ControlFlow::Value(Value::Tuple(elems)) = cf {
+            assert_eq!(elems.len(), 3);
+            assert!(matches!(elems[0], Value::Int(1)));
+            assert!(matches!(elems[1], Value::Int(2)));
+            assert!(matches!(elems[2], Value::Int(3)));
+        } else {
+            panic!("expected Tuple value");
+        }
+    }
+
+    #[test]
+    fn test_eval_empty_tuple() {
+        // () evaluates to Unit
+        let mut env = Env::new();
+        let expr = Expr::Tuple {
+            elems: vec![],
+            span: sp(),
+        };
+        let cf = eval_expr(&mut env, &expr).unwrap();
+        assert!(matches!(cf, ControlFlow::Value(Value::Unit)));
+    }
+
+    #[test]
+    fn test_eval_single_elem_tuple() {
+        // (1) evaluates to Int (not a tuple)
+        let mut env = Env::new();
+        let expr = Expr::Tuple {
+            elems: vec![Expr::Lit(Lit::Int(42), sp())],
+            span: sp(),
+        };
+        let cf = eval_expr(&mut env, &expr).unwrap();
+        assert!(matches!(cf, ControlFlow::Value(Value::Int(42))));
+    }
+
+    #[test]
+    fn test_eval_match_literal() {
+        // match 1 { 1 => true, _ => false }
+        use strata_ast::ast::MatchArm;
+        let mut env = Env::new();
+        let expr = Expr::Match {
+            scrutinee: Box::new(Expr::Lit(Lit::Int(1), sp())),
+            arms: vec![
+                MatchArm {
+                    pat: Pat::Literal(Lit::Int(1), sp()),
+                    body: Expr::Lit(Lit::Bool(true), sp()),
+                    span: sp(),
+                },
+                MatchArm {
+                    pat: Pat::Wildcard(sp()),
+                    body: Expr::Lit(Lit::Bool(false), sp()),
+                    span: sp(),
+                },
+            ],
+            span: sp(),
+        };
+        let cf = eval_expr(&mut env, &expr).unwrap();
+        assert!(matches!(cf, ControlFlow::Value(Value::Bool(true))));
+    }
+
+    #[test]
+    fn test_eval_match_wildcard() {
+        // match 99 { 1 => false, _ => true }
+        use strata_ast::ast::MatchArm;
+        let mut env = Env::new();
+        let expr = Expr::Match {
+            scrutinee: Box::new(Expr::Lit(Lit::Int(99), sp())),
+            arms: vec![
+                MatchArm {
+                    pat: Pat::Literal(Lit::Int(1), sp()),
+                    body: Expr::Lit(Lit::Bool(false), sp()),
+                    span: sp(),
+                },
+                MatchArm {
+                    pat: Pat::Wildcard(sp()),
+                    body: Expr::Lit(Lit::Bool(true), sp()),
+                    span: sp(),
+                },
+            ],
+            span: sp(),
+        };
+        let cf = eval_expr(&mut env, &expr).unwrap();
+        assert!(matches!(cf, ControlFlow::Value(Value::Bool(true))));
+    }
+
+    #[test]
+    fn test_eval_match_binding() {
+        // match 42 { x => x + 1 }
+        use strata_ast::ast::MatchArm;
+        let mut env = Env::new();
+        let expr = Expr::Match {
+            scrutinee: Box::new(Expr::Lit(Lit::Int(42), sp())),
+            arms: vec![MatchArm {
+                pat: Pat::Ident(ident("x")),
+                body: Expr::Binary {
+                    lhs: Box::new(Expr::Var(ident("x"))),
+                    op: BinOp::Add,
+                    rhs: Box::new(Expr::Lit(Lit::Int(1), sp())),
+                    span: sp(),
+                },
+                span: sp(),
+            }],
+            span: sp(),
+        };
+        let cf = eval_expr(&mut env, &expr).unwrap();
+        assert!(matches!(cf, ControlFlow::Value(Value::Int(43))));
+    }
+
+    #[test]
+    fn test_eval_match_tuple() {
+        // match (1, 2) { (a, b) => a + b }
+        use strata_ast::ast::MatchArm;
+        let mut env = Env::new();
+        let expr = Expr::Match {
+            scrutinee: Box::new(Expr::Tuple {
+                elems: vec![Expr::Lit(Lit::Int(1), sp()), Expr::Lit(Lit::Int(2), sp())],
+                span: sp(),
+            }),
+            arms: vec![MatchArm {
+                pat: Pat::Tuple(vec![Pat::Ident(ident("a")), Pat::Ident(ident("b"))], sp()),
+                body: Expr::Binary {
+                    lhs: Box::new(Expr::Var(ident("a"))),
+                    op: BinOp::Add,
+                    rhs: Box::new(Expr::Var(ident("b"))),
+                    span: sp(),
+                },
+                span: sp(),
+            }],
+            span: sp(),
+        };
+        let cf = eval_expr(&mut env, &expr).unwrap();
+        assert!(matches!(cf, ControlFlow::Value(Value::Int(3))));
+    }
+
+    #[test]
+    fn test_eval_variant_construction() {
+        // Option::Some(42)
+        use strata_ast::ast::Path;
+        let mut env = Env::new();
+
+        // First construct the path expression for Option::Some
+        let path_expr = Expr::PathExpr(Path {
+            segments: vec![ident("Option"), ident("Some")],
+            span: sp(),
+        });
+
+        // Call it with argument 42
+        let expr = Expr::Call {
+            callee: Box::new(path_expr),
+            args: vec![Expr::Lit(Lit::Int(42), sp())],
+            span: sp(),
+        };
+
+        let cf = eval_expr(&mut env, &expr).unwrap();
+        if let ControlFlow::Value(Value::Variant {
+            enum_name,
+            variant_name,
+            fields,
+        }) = cf
+        {
+            assert_eq!(enum_name, "Option");
+            assert_eq!(variant_name, "Some");
+            assert_eq!(fields.len(), 1);
+            assert!(matches!(fields[0], Value::Int(42)));
+        } else {
+            panic!("expected Variant value");
+        }
+    }
+
+    #[test]
+    fn test_eval_unit_variant() {
+        // Option::None
+        use strata_ast::ast::Path;
+        let mut env = Env::new();
+        let expr = Expr::PathExpr(Path {
+            segments: vec![ident("Option"), ident("None")],
+            span: sp(),
+        });
+
+        let cf = eval_expr(&mut env, &expr).unwrap();
+        if let ControlFlow::Value(Value::Variant {
+            enum_name,
+            variant_name,
+            fields,
+        }) = cf
+        {
+            assert_eq!(enum_name, "Option");
+            assert_eq!(variant_name, "None");
+            assert!(fields.is_empty());
+        } else {
+            panic!("expected Variant value");
+        }
+    }
+
+    #[test]
+    fn test_eval_match_variant() {
+        // match Option::Some(42) { Option::Some(x) => x, Option::None => 0 }
+        use strata_ast::ast::{MatchArm, Path};
+        let mut env = Env::new();
+
+        // Build Option::Some(42)
+        let scrutinee = Expr::Call {
+            callee: Box::new(Expr::PathExpr(Path {
+                segments: vec![ident("Option"), ident("Some")],
+                span: sp(),
+            })),
+            args: vec![Expr::Lit(Lit::Int(42), sp())],
+            span: sp(),
+        };
+
+        let expr = Expr::Match {
+            scrutinee: Box::new(scrutinee),
+            arms: vec![
+                MatchArm {
+                    pat: Pat::Variant {
+                        path: Path {
+                            segments: vec![ident("Option"), ident("Some")],
+                            span: sp(),
+                        },
+                        fields: vec![Pat::Ident(ident("x"))],
+                        span: sp(),
+                    },
+                    body: Expr::Var(ident("x")),
+                    span: sp(),
+                },
+                MatchArm {
+                    pat: Pat::Variant {
+                        path: Path {
+                            segments: vec![ident("Option"), ident("None")],
+                            span: sp(),
+                        },
+                        fields: vec![],
+                        span: sp(),
+                    },
+                    body: Expr::Lit(Lit::Int(0), sp()),
+                    span: sp(),
+                },
+            ],
+            span: sp(),
+        };
+
+        let cf = eval_expr(&mut env, &expr).unwrap();
+        assert!(matches!(cf, ControlFlow::Value(Value::Int(42))));
+    }
+
+    #[test]
+    fn test_eval_struct_construction() {
+        // Point { x: 10, y: 20 }
+        use strata_ast::ast::{FieldInit, Path};
+        let mut env = Env::new();
+
+        let expr = Expr::StructExpr {
+            path: Path {
+                segments: vec![ident("Point")],
+                span: sp(),
+            },
+            fields: vec![
+                FieldInit {
+                    name: ident("x"),
+                    value: Expr::Lit(Lit::Int(10), sp()),
+                    span: sp(),
+                },
+                FieldInit {
+                    name: ident("y"),
+                    value: Expr::Lit(Lit::Int(20), sp()),
+                    span: sp(),
+                },
+            ],
+            span: sp(),
+        };
+
+        let cf = eval_expr(&mut env, &expr).unwrap();
+        match cf {
+            ControlFlow::Value(Value::Struct { name, fields }) => {
+                assert_eq!(name, "Point");
+                assert!(matches!(fields.get("x"), Some(Value::Int(10))));
+                assert!(matches!(fields.get("y"), Some(Value::Int(20))));
+            }
+            _ => panic!("expected Struct value"),
+        }
+    }
+
+    #[test]
+    fn test_eval_match_struct_pattern() {
+        // match Point { x: 3, y: 4 } { Point { x, y } => x + y }
+        use strata_ast::ast::{MatchArm, PatField, Path};
+        let mut env = Env::new();
+
+        // Build the struct value
+        let scrutinee = Expr::StructExpr {
+            path: Path {
+                segments: vec![ident("Point")],
+                span: sp(),
+            },
+            fields: vec![
+                FieldInit {
+                    name: ident("x"),
+                    value: Expr::Lit(Lit::Int(3), sp()),
+                    span: sp(),
+                },
+                FieldInit {
+                    name: ident("y"),
+                    value: Expr::Lit(Lit::Int(4), sp()),
+                    span: sp(),
+                },
+            ],
+            span: sp(),
+        };
+
+        let expr = Expr::Match {
+            scrutinee: Box::new(scrutinee),
+            arms: vec![MatchArm {
+                pat: Pat::Struct {
+                    path: Path {
+                        segments: vec![ident("Point")],
+                        span: sp(),
+                    },
+                    fields: vec![
+                        PatField {
+                            name: ident("x"),
+                            pat: Pat::Ident(ident("x")),
+                            span: sp(),
+                        },
+                        PatField {
+                            name: ident("y"),
+                            pat: Pat::Ident(ident("y")),
+                            span: sp(),
+                        },
+                    ],
+                    span: sp(),
+                },
+                body: Expr::Binary {
+                    lhs: Box::new(Expr::Var(ident("x"))),
+                    op: BinOp::Add,
+                    rhs: Box::new(Expr::Var(ident("y"))),
+                    span: sp(),
+                },
+                span: sp(),
+            }],
+            span: sp(),
+        };
+
+        let cf = eval_expr(&mut env, &expr).unwrap();
+        assert!(matches!(cf, ControlFlow::Value(Value::Int(7))));
+    }
+
+    #[test]
+    fn test_eval_nested_tuple_pattern() {
+        // match ((1, 2), 3) { ((a, b), c) => a + b + c }
+        use strata_ast::ast::MatchArm;
+        let mut env = Env::new();
+
+        let scrutinee = Expr::Tuple {
+            elems: vec![
+                Expr::Tuple {
+                    elems: vec![Expr::Lit(Lit::Int(1), sp()), Expr::Lit(Lit::Int(2), sp())],
+                    span: sp(),
+                },
+                Expr::Lit(Lit::Int(3), sp()),
+            ],
+            span: sp(),
+        };
+
+        let expr = Expr::Match {
+            scrutinee: Box::new(scrutinee),
+            arms: vec![MatchArm {
+                pat: Pat::Tuple(
+                    vec![
+                        Pat::Tuple(vec![Pat::Ident(ident("a")), Pat::Ident(ident("b"))], sp()),
+                        Pat::Ident(ident("c")),
+                    ],
+                    sp(),
+                ),
+                body: Expr::Binary {
+                    lhs: Box::new(Expr::Binary {
+                        lhs: Box::new(Expr::Var(ident("a"))),
+                        op: BinOp::Add,
+                        rhs: Box::new(Expr::Var(ident("b"))),
+                        span: sp(),
+                    }),
+                    op: BinOp::Add,
+                    rhs: Box::new(Expr::Var(ident("c"))),
+                    span: sp(),
+                },
+                span: sp(),
+            }],
+            span: sp(),
+        };
+
+        let cf = eval_expr(&mut env, &expr).unwrap();
+        assert!(matches!(cf, ControlFlow::Value(Value::Int(6))));
     }
 }

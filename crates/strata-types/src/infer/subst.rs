@@ -38,6 +38,9 @@ impl Subst {
             }
             Ty::Tuple(xs) => Ty::tuple(xs.iter().map(|x| self.apply(x)).collect::<Vec<_>>()),
             Ty::List(x) => Ty::list(self.apply(x)),
+            Ty::Adt { name, args } => {
+                Ty::adt(name.clone(), args.iter().map(|a| self.apply(a)).collect())
+            }
         }
     }
 

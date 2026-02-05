@@ -1,9 +1,9 @@
 # Strata - Implemented Features
 
-> Last updated: February 3, 2026
-> Status: Issues 001-006 complete, hardening complete (v0.0.7.0)
+> Last updated: February 4, 2026
+> Status: Issues 001-007 complete (v0.0.8.0)
 
-## ✅ Working Features (v0.0.7.0)
+## ✅ Working Features (v0.0.8.0)
 
 ### Parser & AST (Issue 001)
 
@@ -23,7 +23,7 @@
   - Relational: `<`, `<=`, `>`, `>=`
   - Arithmetic: `+`, `-`, `*`, `/`
 - Parentheses: `(expr)`
-- Function calls: `f(a, b, c)` (parsed but not implemented)
+- Function calls: `f(a, b, c)`
 
 **Declarations:**
 - Let bindings: `let x = expr;`
@@ -32,14 +32,6 @@
 **Test Coverage:**
 - 13+ integration tests covering precedence, calls, literals
 - All example files parse successfully
-
-**What Works:**
-```strata
-let x = 1;
-let y = (1 + 2) * (3 + 4);
-let z = true && false;
-let w = 1 < 2;
-```
 
 ---
 
@@ -68,6 +60,7 @@ let w = 1 < 2;
 - Functions: `Arrow(A, B)`
 - Tuples: `Tuple(Vec<Ty>)` - heterogeneous
 - Lists: `List(Box<Ty>)` - homogeneous
+- ADTs: `Adt { name, args }` - generic algebraic data types
 
 **Unification:**
 - Full unification algorithm with occurs check
@@ -76,10 +69,6 @@ let w = 1 < 2;
 
 **Type Context:**
 - Basic TypeCtx for managing fresh variables
-
-**Test Coverage:**
-- 11 tests covering tuples, lists, vars, occurs check, new type constants
-- All pass
 
 **Location:** `crates/strata-types/src/infer/`
 
@@ -106,37 +95,6 @@ let w = 1 < 2;
   - Logical: `&&`, `||` (Bool+Bool → Bool)
 - Let bindings with inference and annotation checking
 - Parenthesized expressions
-
-**Test Coverage:**
-- 34 comprehensive tests in `checker_tests.rs`
-  - 19 positive tests (valid programs)
-  - 11 negative tests (type errors)
-  - 4 edge case tests
-- All tests pass
-
-**CLI Integration:**
-- Type checker runs automatically after parsing
-- Type errors displayed with spans before evaluation
-- Programs with type errors exit with error code 1
-
-**What Works:**
-```strata
-let x: Int = 42;           // Type annotation
-let y = 2 + 3;             // Type inference
-let z = true && false;     // Boolean logic
-let w = 1 < 2;             // Comparison
-let f: Float = 3.14;       // Float type
-let s: String = "hello";   // String type
-let result = (1 + 2) * 3;  // Complex expression
-```
-
-**Catches Errors:**
-```strata
-let bad1 = 1 + true;       // Type mismatch: Int vs Bool
-let bad2 = "hi" * 5;       // Type mismatch: String vs Int
-let bad3: Bool = 123;      // Annotation mismatch
-let bad4 = unknown_var;    // Unknown variable
-```
 
 **Location:** `crates/strata-types/src/checker.rs`
 
@@ -165,8 +123,6 @@ let bad4 = unknown_var;    // Unknown variable
 - Numeric constraints on arithmetic
 - Constraint provenance (span tracking)
 - Determinism audit
-
-**Test Coverage:** 49 tests after Issue 005-b
 
 **What Works:**
 ```strata
@@ -236,14 +192,6 @@ fn sum_to(n: Int) -> Int {
     };
     total
 }
-
-// Mutual recursion works
-fn is_even(n: Int) -> Bool {
-    if n == 0 { true } else { is_odd(n - 1) }
-}
-fn is_odd(n: Int) -> Bool {
-    if n == 0 { false } else { is_even(n - 1) }
-}
 ```
 
 **Location:** `crates/strata-cli/src/eval.rs`, `crates/strata-types/src/infer/constraint.rs`
@@ -252,7 +200,7 @@ fn is_odd(n: Int) -> Bool {
 
 ---
 
-### Security Hardening (Issue 006-Hardening) ✨ NEW
+### Security Hardening (Issue 006-Hardening)
 
 **DoS Protection Limits:**
 | Limit | Value | Purpose |
@@ -276,28 +224,153 @@ fn is_odd(n: Int) -> Bool {
 - Universal lexer error surfacing
 - Nesting guards for if/while/else-if chains
 
-**Test Coverage:** 163 tests (30 new hardening tests)
-
 **Location:** Across all crates (strata-parse, strata-types, strata-cli)
 
 **Status:** Complete. Production-ready security posture for v0.1.
 
 ---
 
-### CLI (Issue 001, updated through 006)
+### ADTs & Pattern Matching (Issue 007) ✨ NEW
+
+**Struct Definitions:**
+- Named fields: `struct Point { x: Int, y: Int }`
+- Generic type parameters: `struct Pair<T, U> { first: T, second: U }`
+- Struct construction: `Point { x: 1, y: 2 }`
+- Struct patterns in match: `Point { x, y } => ...`
+
+**Enum Definitions:**
+- Unit variants: `None`
+- Tuple variants: `Some(T)`, `Ok(T)`, `Err(E)`
+- Generic enums: `Option<T>`, `Result<T, E>`
+- Variant construction: `Option::Some(42)`, `Option::None`
+- Variant patterns in match: `Option::Some(x) => ...`
+
+**Tuple Types:**
+- Tuple expressions: `(1, 2, 3)`
+- Tuple types: `(Int, Bool, String)`
+- Empty tuple (unit): `()`
+- Nested tuples: `((1, 2), 3)`
+- Tuple patterns: `(a, b) => ...`
+
+**Pattern Matching:**
+- Match expressions: `match x { pat => expr, ... }`
+- Pattern types:
+  - Wildcard: `_`
+  - Variable binding: `x`
+  - Literal: `0`, `true`, `"hello"`
+  - Tuple: `(a, b, c)`
+  - Struct: `Point { x, y: 0 }`
+  - Variant: `Option::Some(x)`
+  - Nested patterns: `Option::Some((a, b))`
+
+**Exhaustiveness Checking:**
+- Maranget's algorithm for exhaustiveness
+- Non-exhaustive match errors with witness patterns
+- Redundant arm detection (unreachable patterns)
+- DoS protection limits
+
+**What Works:**
+```strata
+enum Option<T> {
+    Some(T),
+    None
+}
+
+fn unwrap_or(opt: Option<Int>, default: Int) -> Int {
+    match opt {
+        Option::Some(x) => x,
+        Option::None => default
+    }
+}
+
+fn is_some(opt: Option<Int>) -> Bool {
+    match opt {
+        Option::Some(_) => true,
+        Option::None => false
+    }
+}
+
+enum Result<T, E> {
+    Ok(T),
+    Err(E)
+}
+
+fn unwrap_result(r: Result<Int, String>) -> Int {
+    match r {
+        Result::Ok(x) => x,
+        Result::Err(_) => 0
+    }
+}
+
+struct Point { x: Int, y: Int }
+
+fn add_points(p1: Point, p2: Point) -> Point {
+    match p1 {
+        Point { x: x1, y: y1 } => match p2 {
+            Point { x: x2, y: y2 } => Point { x: x1 + x2, y: y1 + y2 }
+        }
+    }
+}
+
+fn swap(pair: (Int, Int)) -> (Int, Int) {
+    match pair {
+        (a, b) => (b, a)
+    }
+}
+```
+
+**Destructuring Let:**
+- Irrefutable patterns in let bindings: `let (a, b) = (1, 2);`
+- Tuple destructuring: `let (x, y, z) = triple;`
+- Nested patterns: `let ((a, b), c) = nested_tuple;`
+- Wildcard patterns: `let _ = expr;`
+- Refutable pattern detection with helpful error messages
+
+**Capability Check on Bindings (Code Review Fix):**
+- Top-level let bindings checked for capability types after constraint solving
+- Block-level let bindings: best-effort check (types may be unsolved; full coverage in Issue 008)
+- `check_let()` now uses `CheckContext` with ADT registry (fixes struct expressions in top-level lets)
+
+### Known Limitations (v0.1)
+
+- **Exhaustiveness deferred on unresolved types:** When the scrutinee has unresolved type variables (e.g., matching on a freshly constructed value without type annotation), exhaustiveness checking is skipped. Workaround: annotate the type or bind to a variable first.
+- **Nested enum patterns:** Complex nested patterns may not report exhaustiveness correctly in all cases.
+- **Generic type annotations in let bindings:** `let x: Result<Int, String> = ...` not yet supported. Workaround: rely on type inference.
+- **Capability binding semantics:** `let x = cap;` (bare rebinding) is currently rejected alongside container storage. Will be refined when capability system lands in Issue 008/009. Conservative default is intentional.
+- **Block-level capability check is best-effort:** When types contain unresolved inference variables inside a function body, the capability check may not trigger until the effect system provides post-solving analysis (Issue 008).
+
+**Example Files:**
+- `examples/option.strata` - Option enum with unwrap_or, is_some, map_option
+- `examples/result.strata` - Result enum with unwrap_result, is_ok, map_result
+- `examples/tuple.strata` - Tuple operations: swap, first, second, nested tuples
+- `examples/struct.strata` - Point struct with construction and pattern matching
+
+**Location:**
+- `crates/strata-ast/src/lib.rs` - AST nodes for structs, enums, patterns
+- `crates/strata-parse/src/parser.rs` - Parser for ADT syntax
+- `crates/strata-types/src/adt.rs` - ADT registry and definitions
+- `crates/strata-types/src/exhaustive.rs` - Exhaustiveness checker
+- `crates/strata-types/src/infer/constraint.rs` - Type inference for ADTs
+- `crates/strata-cli/src/eval.rs` - Evaluator for ADT expressions
+
+**Status:** Complete. Full ADT support with exhaustiveness checking.
+
+---
+
+### CLI (Issue 001, updated through 007)
 
 **Commands:**
 ```bash
 # Parse and dump AST
 strata-cli path/to/file.strata
 
-# Pretty print (not implemented)
+# Pretty print
 strata-cli --format pretty file.strata
 
-# JSON output (not implemented)
+# JSON output
 strata-cli --format json file.strata
 
-# Evaluate (simple interpreter)
+# Evaluate (calls main() and prints result)
 strata-cli --eval file.strata
 ```
 
@@ -307,7 +380,7 @@ strata-cli --eval file.strata
 - Exits with error code 1 on type errors
 
 **Evaluator:**
-- Arithmetic on Int and Float with mixed-mode
+- Arithmetic on Int and Float
 - Relational comparisons
 - Logical operators with short-circuit
 - String equality
@@ -316,6 +389,9 @@ strata-cli --eval file.strata
 - Return statements
 - Function calls with closures
 - Mutable variable assignment
+- Tuple construction and destructuring
+- Struct construction and pattern matching
+- Enum variant construction and matching
 
 **Status:** Working for all implemented syntax. Type checking integrated.
 
@@ -324,14 +400,11 @@ strata-cli --eval file.strata
 ## ❌ Not Yet Implemented
 
 **Deferred from Issue 001:**
-- Match expressions
-- ADTs (struct/enum definitions)
 - Method chaining: `x.map(f).filter(g)`
 - Pipe operator: `x |> f |> g`
 
 **From Later Issues:**
-- ADTs & Pattern Matching (Issue 007) ← **NEXT**
-- Effect enforcement (Issue 008)
+- Effect enforcement (Issue 008) ← **NEXT**
 - Capability checking (Issue 009)
 - Profile enforcement (Issue 010)
 - Actors & supervision
@@ -349,7 +422,7 @@ strata-cli --eval file.strata
 # Build all crates
 cargo build --workspace
 
-# Run all tests (163 tests)
+# Run all tests (292 tests)
 cargo test --workspace
 
 # Run with clippy (enforced in CI)
@@ -362,7 +435,8 @@ cargo test -p strata-parse
 cargo test -p strata-types
 
 # Try an example
-cargo run -p strata-cli -- examples/hello.strata
+cargo run -p strata-cli -- examples/option.strata
+cargo run -p strata-cli -- --eval examples/option.strata
 ```
 
 ---
@@ -378,21 +452,19 @@ strata-ast       (no deps)
 
 ---
 
-## Project Stats (v0.0.7.0)
+## Project Stats (v0.0.8.0)
 
 - **Crates:** 4 (ast, parse, types, cli)
-- **Total Tests:** 163 (parser: 38, types: 82, cli: 13, hardening: 30)
-- **Lines of Code:** ~5500+ (estimate)
-- **Issues Completed:** 6 + hardening (Parser, Effects, Type Scaffolding, Basic Type Checking, Functions, Blocks, Security Hardening)
-- **Example Files:** 20+
+- **Total Tests:** 292 (parser: 38, types: 161, cli: 26, others: 67)
+- **Lines of Code:** ~7500+ (estimate)
+- **Issues Completed:** 7 + hardening (Parser, Effects, Type Scaffolding, Basic Type Checking, Functions, Blocks, ADTs, Security Hardening)
+- **Example Files:** 28+
 
 ---
 
 ## Next Up
 
-**Issue 007: ADTs & Pattern Matching**
-- Struct and enum definitions
-- Generic type parameters
-- Match expressions
-- Pattern matching
-- Exhaustiveness checking
+**Issue 008: Effect Enforcement**
+- Effect annotations on functions
+- Effect propagation through calls
+- Effect checking at compile time
