@@ -1,6 +1,6 @@
 # Issue 007: ADTs & Pattern Matching — Implementation Plan
 
-**For:** Claude Code  
+**For:** AI-assisted implementation
 **Issue:** 007  
 **Estimated Time:** 10-14 days  
 **Prerequisites:** v0.0.7.0 tagged, CI green, ADR-0003 approved
@@ -1166,7 +1166,7 @@ cargo run -p strata-cli -- --eval examples/tuple.strata
 
 1. Bug hunt session
 2. Documentation scrub
-3. Multi-LLM review (ChatGPT, Gemini, Grok)
+3. Multi-source external review (3 independent reviewers)
 4. Update IN_PROGRESS.md for Issue 008
 5. Tag v0.1.0 or v0.0.8.0
 

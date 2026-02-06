@@ -123,6 +123,8 @@ impl Unifier {
             // mismatched types to unify (e.g., `if c { return 1; } else { "str" }`).
             (Ty::Never, Ty::Never) => Ok(()),
 
+            (Ty::Cap(k1), Ty::Cap(k2)) if k1 == k2 => Ok(()),
+
             (Ty::Var(v), t) | (t, Ty::Var(v)) => self.unify_var(v, t),
             (Ty::Const(c1), Ty::Const(c2)) if c1 == c2 => Ok(()),
 
@@ -291,7 +293,7 @@ fn occurs_in(v: TypeVarId, ty: &Ty, subst: &Subst) -> bool {
     };
     match ty {
         Ty::Var(w) => w == v,
-        Ty::Const(_) | Ty::Never => false,
+        Ty::Const(_) | Ty::Never | Ty::Cap(_) => false,
         Ty::Arrow(ref params, ref ret, _eff) => {
             params.iter().any(|p| occurs_in(v, p, subst)) || occurs_in(v, ret, subst)
         }

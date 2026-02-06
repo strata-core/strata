@@ -1,4 +1,8 @@
 //! Integration tests for effect system type checking
+//!
+//! Post-009: All functions and extern declarations with concrete effects must
+//! have matching capability parameters. These tests validate effect inference,
+//! checking, and propagation with capabilities properly threaded through.
 
 use strata_parse::parse_str;
 use strata_types::TypeChecker;
@@ -40,16 +44,17 @@ fn pure_function_with_empty_effects() {
 
 #[test]
 fn pure_function_with_explicit_effects_superset() {
-    // Declaring effects that aren't used is OK (superset allowed)
-    check_ok("fn add(x: Int, y: Int) -> Int & {Fs} { x + y }");
+    // Declaring effects that aren't used is OK (superset allowed),
+    // but now requires the matching capability parameter
+    check_ok("fn add(fs: FsCap, x: Int, y: Int) -> Int & {Fs} { x + y }");
 }
 
 #[test]
 fn extern_fn_with_effects() {
-    // Extern fn declaration with effects
+    // Extern fn declaration with effects requires matching cap param
     check_ok(
         r#"
-        extern fn read_file(path: String) -> String & {Fs};
+        extern fn read_file(fs: FsCap, path: String) -> String & {Fs};
     "#,
     );
 }
@@ -83,8 +88,8 @@ fn call_effectful_extern_from_effectful_fn() {
     // Function with {Fs} calls extern fn with {Fs} → OK
     check_ok(
         r#"
-        extern fn read_file(path: String) -> String & {Fs};
-        fn load(p: String) -> String & {Fs} { read_file(p) }
+        extern fn read_file(fs: FsCap, path: String) -> String & {Fs};
+        fn load(fs: FsCap, p: String) -> String & {Fs} { read_file(fs, p) }
     "#,
     );
 }
@@ -94,8 +99,8 @@ fn call_effectful_extern_from_superset_fn() {
     // Function declares {Fs, Net} and calls fn with just {Fs} → OK (superset)
     check_ok(
         r#"
-        extern fn read_file(path: String) -> String & {Fs};
-        fn load(p: String) -> String & {Fs, Net} { read_file(p) }
+        extern fn read_file(fs: FsCap, path: String) -> String & {Fs};
+        fn load(fs: FsCap, net: NetCap, p: String) -> String & {Fs, Net} { read_file(fs, p) }
     "#,
     );
 }
@@ -113,25 +118,26 @@ fn call_pure_extern_from_pure_fn() {
 
 #[test]
 fn unannotated_fn_calling_effectful_extern() {
-    // Unannotated function calling effectful extern → effects inferred
+    // Unannotated function calling effectful extern → effects inferred.
+    // The inferred {Fs} effect requires FsCap.
     check_ok(
         r#"
-        extern fn read_file(path: String) -> String & {Fs};
-        fn load(p: String) -> String { read_file(p) }
+        extern fn read_file(fs: FsCap, path: String) -> String & {Fs};
+        fn load(fs: FsCap, p: String) -> String { read_file(fs, p) }
     "#,
     );
 }
 
 #[test]
 fn multiple_effects_accumulate() {
-    // Function calls both {Fs} and {Net} externs → needs both
+    // Function calls both {Fs} and {Net} externs → needs both effects and caps
     check_ok(
         r#"
-        extern fn read_file(path: String) -> String & {Fs};
-        extern fn fetch(url: String) -> String & {Net};
-        fn both(p: String, u: String) -> String & {Fs, Net} {
-            let _a = read_file(p);
-            fetch(u)
+        extern fn read_file(fs: FsCap, path: String) -> String & {Fs};
+        extern fn fetch(net: NetCap, url: String) -> String & {Net};
+        fn both(fs: FsCap, net: NetCap, p: String, u: String) -> String & {Fs, Net} {
+            let _a = read_file(fs, p);
+            fetch(net, u)
         }
     "#,
     );
@@ -142,9 +148,9 @@ fn transitive_effects() {
     // a() calls b() which has {Fs} → a() inferred {Fs}, then called from c() with {Fs}
     check_ok(
         r#"
-        extern fn read_file(path: String) -> String & {Fs};
-        fn b(p: String) -> String & {Fs} { read_file(p) }
-        fn a(p: String) -> String & {Fs} { b(p) }
+        extern fn read_file(fs: FsCap, path: String) -> String & {Fs};
+        fn b(fs: FsCap, p: String) -> String & {Fs} { read_file(fs, p) }
+        fn a(fs: FsCap, p: String) -> String & {Fs} { b(fs, p) }
     "#,
     );
 }
@@ -154,9 +160,9 @@ fn effectful_fn_called_in_let() {
     // Let binding can call effectful functions if enclosing fn has effects
     check_ok(
         r#"
-        extern fn read_file(path: String) -> String & {Fs};
-        fn process(p: String) -> Int & {Fs} {
-            let _data = read_file(p);
+        extern fn read_file(fs: FsCap, path: String) -> String & {Fs};
+        fn process(fs: FsCap, p: String) -> Int & {Fs} {
+            let _data = read_file(fs, p);
             42
         }
     "#,
@@ -168,11 +174,11 @@ fn effect_order_independence() {
     // {Net, Fs} should be the same as {Fs, Net}
     check_ok(
         r#"
-        extern fn read_file(path: String) -> String & {Fs};
-        extern fn fetch(url: String) -> String & {Net};
-        fn both(p: String, u: String) -> String & {Net, Fs} {
-            let _a = read_file(p);
-            fetch(u)
+        extern fn read_file(fs: FsCap, path: String) -> String & {Fs};
+        extern fn fetch(net: NetCap, url: String) -> String & {Net};
+        fn both(fs: FsCap, net: NetCap, p: String, u: String) -> String & {Net, Fs} {
+            let _a = read_file(fs, p);
+            fetch(net, u)
         }
     "#,
     );
@@ -183,8 +189,8 @@ fn duplicate_effects_in_annotation() {
     // Duplicate effects in annotation are OK (set semantics)
     check_ok(
         r#"
-        extern fn read_file(path: String) -> String & {Fs};
-        fn load(p: String) -> String & {Fs, Fs} { read_file(p) }
+        extern fn read_file(fs: FsCap, path: String) -> String & {Fs};
+        fn load(fs: FsCap, p: String) -> String & {Fs, Fs} { read_file(fs, p) }
     "#,
     );
 }
@@ -205,11 +211,11 @@ fn recursive_fn_with_effects() {
     // Recursive function with effects
     check_ok(
         r#"
-        extern fn log(msg: String) -> () & {Fs};
-        fn countdown(n: Int) -> () & {Fs} {
+        extern fn log(fs: FsCap, msg: String) -> () & {Fs};
+        fn countdown(fs: FsCap, n: Int) -> () & {Fs} {
             if n > 0 {
-                log("tick");
-                countdown(n - 1)
+                log(fs, "tick");
+                countdown(fs, n - 1)
             } else {
                 ()
             }
@@ -231,20 +237,20 @@ fn adt_constructors_are_pure() {
 
 #[test]
 fn all_five_effects() {
-    // All five effect names are recognized
+    // All five effect names are recognized, each with matching cap
     check_ok(
         r#"
-        extern fn e1() -> () & {Fs};
-        extern fn e2() -> () & {Net};
-        extern fn e3() -> () & {Time};
-        extern fn e4() -> () & {Rand};
-        extern fn e5() -> () & {Ai};
-        fn all() -> () & {Fs, Net, Time, Rand, Ai} {
-            e1();
-            e2();
-            e3();
-            e4();
-            e5()
+        extern fn e1(fs: FsCap) -> () & {Fs};
+        extern fn e2(net: NetCap) -> () & {Net};
+        extern fn e3(time: TimeCap) -> () & {Time};
+        extern fn e4(rand: RandCap) -> () & {Rand};
+        extern fn e5(ai: AiCap) -> () & {Ai};
+        fn all(fs: FsCap, net: NetCap, time: TimeCap, rand: RandCap, ai: AiCap) -> () & {Fs, Net, Time, Rand, Ai} {
+            e1(fs);
+            e2(net);
+            e3(time);
+            e4(rand);
+            e5(ai)
         }
     "#,
     );
@@ -256,11 +262,12 @@ fn all_five_effects() {
 
 #[test]
 fn pure_fn_calling_effectful_extern_error() {
-    // Pure function (& {}) calls effectful extern → error
+    // Pure function (& {}) calls effectful extern → effect mismatch error.
+    // The function has FsCap to satisfy arity, but declares pure effects.
     let err = check_err(
         r#"
-        extern fn read_file(path: String) -> String & {Fs};
-        fn bad() -> String & {} { read_file("test") }
+        extern fn read_file(fs: FsCap, path: String) -> String & {Fs};
+        fn bad(fs: FsCap) -> String & {} { read_file(fs, "test") }
     "#,
     );
     assert!(
@@ -274,8 +281,8 @@ fn insufficient_effects_error() {
     // Function declares {Net} but calls {Fs} → error
     let err = check_err(
         r#"
-        extern fn read_file(path: String) -> String & {Fs};
-        fn bad(p: String) -> String & {Net} { read_file(p) }
+        extern fn read_file(fs: FsCap, path: String) -> String & {Fs};
+        fn bad(fs: FsCap, net: NetCap, p: String) -> String & {Net} { read_file(fs, p) }
     "#,
     );
     assert!(
@@ -312,6 +319,34 @@ fn extern_fn_unknown_effect_error() {
     );
 }
 
+#[test]
+fn extern_fn_with_effects_missing_cap_error() {
+    // Extern fn with {Fs} effect but no FsCap → error
+    let err = check_err(
+        r#"
+        extern fn bad(path: String) -> String & {Fs};
+    "#,
+    );
+    assert!(
+        err.contains("FsCap") || err.contains("capability"),
+        "Expected missing capability error on extern, got: {err}"
+    );
+}
+
+#[test]
+fn fn_with_effects_missing_cap_error() {
+    // Function with declared {Fs} effect but no FsCap → error
+    let err = check_err(
+        r#"
+        fn bad(x: Int) -> Int & {Fs} { x + 1 }
+    "#,
+    );
+    assert!(
+        err.contains("FsCap") || err.contains("capability"),
+        "Expected missing capability error, got: {err}"
+    );
+}
+
 // ============================================================================
 // EDGE CASE TESTS
 // ============================================================================
@@ -319,12 +354,11 @@ fn extern_fn_unknown_effect_error() {
 #[test]
 fn never_plus_effects_diverging_body() {
     // A function that always returns still has its effects checked
-    // (even though the body type is Never, effects should propagate)
     check_ok(
         r#"
-        extern fn log(msg: String) -> () & {Fs};
-        fn diverge_with_effect() -> Int & {Fs} {
-            log("bye");
+        extern fn log(fs: FsCap, msg: String) -> () & {Fs};
+        fn diverge_with_effect(fs: FsCap) -> Int & {Fs} {
+            log(fs, "bye");
             return 0;
         }
     "#,
@@ -347,16 +381,16 @@ fn match_arms_with_effectful_calls() {
     // Effects in match arms should propagate to enclosing function
     check_ok(
         r#"
-        extern fn log(msg: String) -> () & {Fs};
+        extern fn log(fs: FsCap, msg: String) -> () & {Fs};
         enum Option<T> { Some(T), None }
-        fn process(opt: Option<Int>) -> Int & {Fs} {
+        fn process(fs: FsCap, opt: Option<Int>) -> Int & {Fs} {
             match opt {
                 Option::Some(x) => {
-                    log("found");
+                    log(fs, "found");
                     x
                 }
                 Option::None => {
-                    log("missing");
+                    log(fs, "missing");
                     0
                 }
             }
@@ -370,12 +404,12 @@ fn match_arms_effectful_error_in_pure() {
     // Match arms with effects in a pure function should fail
     let err = check_err(
         r#"
-        extern fn log(msg: String) -> () & {Fs};
+        extern fn log(fs: FsCap, msg: String) -> () & {Fs};
         enum Option<T> { Some(T), None }
-        fn process(opt: Option<Int>) -> Int & {} {
+        fn process(fs: FsCap, opt: Option<Int>) -> Int & {} {
             match opt {
                 Option::Some(x) => {
-                    log("found");
+                    log(fs, "found");
                     x
                 }
                 Option::None => 0
@@ -394,13 +428,13 @@ fn if_branches_with_effects() {
     // Effects from both if branches should propagate
     check_ok(
         r#"
-        extern fn log(msg: String) -> () & {Fs};
-        extern fn fetch(url: String) -> String & {Net};
-        fn do_something(flag: Bool) -> () & {Fs, Net} {
+        extern fn log(fs: FsCap, msg: String) -> () & {Fs};
+        extern fn fetch(net: NetCap, url: String) -> String & {Net};
+        fn do_something(fs: FsCap, net: NetCap, flag: Bool) -> () & {Fs, Net} {
             if flag {
-                log("yes");
+                log(fs, "yes");
             } else {
-                let _r = fetch("http://example.com");
+                let _r = fetch(net, "http://example.com");
             }
         }
     "#,
@@ -412,11 +446,11 @@ fn while_loop_with_effects() {
     // Effects inside while loop body should propagate
     check_ok(
         r#"
-        extern fn log(msg: String) -> () & {Fs};
-        fn loop_with_log(n: Int) -> () & {Fs} {
+        extern fn log(fs: FsCap, msg: String) -> () & {Fs};
+        fn loop_with_log(fs: FsCap, n: Int) -> () & {Fs} {
             let mut i = 0;
             while i < n {
-                log("iteration");
+                log(fs, "iteration");
                 i = i + 1;
             }
         }
@@ -426,12 +460,13 @@ fn while_loop_with_effects() {
 
 #[test]
 fn higher_order_effectful_fn() {
-    // Passing an effectful function to a higher-order function
+    // Passing an effectful function to a higher-order function.
+    // Using single-arg extern so HOF pattern f(x) works.
     check_ok(
         r#"
-        extern fn read_file(path: String) -> String & {Fs};
+        extern fn do_fs(fs: FsCap) -> String & {Fs};
         fn apply(f, x) { f(x) }
-        fn use_it() -> String & {Fs} { apply(read_file, "test.txt") }
+        fn use_it(fs: FsCap) -> String & {Fs} { apply(do_fs, fs) }
     "#,
     );
 }
@@ -441,8 +476,8 @@ fn fn_no_return_type_with_effects_annotation() {
     // Effects annotation with no explicit return type
     check_ok(
         r#"
-        extern fn log(msg: String) -> () & {Fs};
-        fn do_log(msg: String) & {Fs} { log(msg) }
+        extern fn log(fs: FsCap, msg: String) -> () & {Fs};
+        fn do_log(fs: FsCap, msg: String) & {Fs} { log(fs, msg) }
     "#,
     );
 }
@@ -452,10 +487,10 @@ fn nested_function_calls_accumulate_effects() {
     // Nested calls should accumulate effects from all callees
     check_ok(
         r#"
-        extern fn read_file(path: String) -> String & {Fs};
-        extern fn send(url: String, data: String) -> () & {Net};
-        fn read_and_send(path: String, url: String) -> () & {Fs, Net} {
-            send(url, read_file(path))
+        extern fn read_file(fs: FsCap, path: String) -> String & {Fs};
+        extern fn send(net: NetCap, url: String, data: String) -> () & {Net};
+        fn read_and_send(fs: FsCap, net: NetCap, path: String, url: String) -> () & {Fs, Net} {
+            send(net, url, read_file(fs, path))
         }
     "#,
     );
@@ -467,18 +502,16 @@ fn nested_function_calls_accumulate_effects() {
 
 #[test]
 fn polymorphic_fn_called_with_different_effect_callees() {
-    // C1 regression: `apply` is polymorphic ∀t0 t1 e0. (t0 -> t1 & e0, t0) -> t1 & e0
-    // When called twice with different-effect callees, each call must get
-    // FRESH effect vars. If they share the same e0, the second call would
-    // incorrectly conflict with the first.
+    // C1 regression: `apply` is polymorphic. Each call with a different-effect
+    // callee must get FRESH effect vars. Using single-arg externs for HOF compat.
     check_ok(
         r#"
-        extern fn read_file(path: String) -> String & {Fs};
-        extern fn fetch(url: String) -> String & {Net};
+        extern fn do_fs(fs: FsCap) -> String & {Fs};
+        extern fn do_net(net: NetCap) -> String & {Net};
         fn apply(f, x) { f(x) }
-        fn use_both() -> () & {Fs, Net} {
-            let _a = apply(read_file, "test.txt");
-            let _b = apply(fetch, "http://example.com");
+        fn use_both(fs: FsCap, net: NetCap) -> () & {Fs, Net} {
+            let _a = apply(do_fs, fs);
+            let _b = apply(do_net, net);
         }
     "#,
     );
@@ -489,12 +522,12 @@ fn polymorphic_fn_different_effects_insufficient_declaration() {
     // Same as above but with insufficient declared effects — should error
     let err = check_err(
         r#"
-        extern fn read_file(path: String) -> String & {Fs};
-        extern fn fetch(url: String) -> String & {Net};
+        extern fn do_fs(fs: FsCap) -> String & {Fs};
+        extern fn do_net(net: NetCap) -> String & {Net};
         fn apply(f, x) { f(x) }
-        fn use_both() -> () & {Fs} {
-            let _a = apply(read_file, "test.txt");
-            let _b = apply(fetch, "http://example.com");
+        fn use_both(fs: FsCap, net: NetCap) -> () & {Fs} {
+            let _a = apply(do_fs, fs);
+            let _b = apply(do_net, net);
         }
     "#,
     );
@@ -510,21 +543,20 @@ fn polymorphic_fn_different_effects_insufficient_declaration() {
 
 #[test]
 fn mlr1_effect_laundering_via_top_level_fn() {
-    // MLR-1 adapted: the original attack used closures (not supported in Strata).
-    // This adapted version uses a top-level "launder" function that calls get_fs()
-    // and also calls its argument f(). A pure function calling launder(get_net) must fail.
+    // MLR-1 adapted: A "launder" function that has its own effect and also calls
+    // its callback. A pure function calling launder must fail with effect error.
     let err = check_err(
         r#"
-        extern fn get_fs() -> () & {Fs};
-        extern fn get_net() -> () & {Net};
+        extern fn do_fs(fs: FsCap) -> () & {Fs};
+        extern fn do_net(net: NetCap) -> () & {Net};
 
-        fn launder(f) {
-            get_fs();
-            f()
+        fn launder(fs: FsCap, f, x) & {Fs} {
+            do_fs(fs);
+            f(x)
         }
 
-        fn pure_backdoor() -> () & {} {
-            launder(get_net);
+        fn pure_backdoor(fs: FsCap, net: NetCap) -> () & {} {
+            launder(fs, do_net, net);
             ()
         }
     "#,
@@ -554,9 +586,9 @@ fn mlr1_effectful_let_in_effectful_fn() {
     // A let binding calling an effectful function is fine if the enclosing fn has effects.
     check_ok(
         r#"
-        extern fn read_file(path: String) -> String & {Fs};
-        fn load() -> String & {Fs} {
-            let data = read_file("test.txt");
+        extern fn read_file(fs: FsCap, path: String) -> String & {Fs};
+        fn load(fs: FsCap) -> String & {Fs} {
+            let data = read_file(fs, "test.txt");
             data
         }
     "#,
@@ -569,10 +601,10 @@ fn mlr1_top_level_let_with_effects_propagation() {
     // the bound value carries the effect in its type.
     check_ok(
         r#"
-        extern fn read_file(path: String) -> String & {Fs};
+        extern fn do_fs(fs: FsCap) -> String & {Fs};
         fn apply(f, x) { f(x) }
-        fn use_it() -> String & {Fs} {
-            let result = apply(read_file, "test.txt");
+        fn use_it(fs: FsCap) -> String & {Fs} {
+            let result = apply(do_fs, fs);
             result
         }
     "#,
@@ -582,15 +614,15 @@ fn mlr1_top_level_let_with_effects_propagation() {
 #[test]
 fn mlr1_effect_propagation_through_multiple_hof_calls() {
     // Effects must accumulate across multiple HOF calls.
-    // apply(get_fs, 0) + apply(get_net, 0) in a pure function must fail.
+    // A pure function calling apply with effectful callbacks must fail.
     let err = check_err(
         r#"
-        extern fn get_fs(x: Int) -> () & {Fs};
-        extern fn get_net(x: Int) -> () & {Net};
+        extern fn do_fs(fs: FsCap) -> () & {Fs};
+        extern fn do_net(net: NetCap) -> () & {Net};
         fn apply(f, x) { f(x) }
-        fn pure_backdoor() -> () & {} {
-            let _a = apply(get_fs, 0);
-            let _b = apply(get_net, 0);
+        fn pure_backdoor(fs: FsCap, net: NetCap) -> () & {} {
+            let _a = apply(do_fs, fs);
+            let _b = apply(do_net, net);
             ()
         }
     "#,

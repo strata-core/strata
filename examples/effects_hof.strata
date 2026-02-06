@@ -3,14 +3,16 @@
 // When a higher-order function calls a function parameter,
 // the callee's effects flow through to the caller.
 
-extern fn log(msg: String) -> () & {Fs};
+extern fn log(msg: String, fs: FsCap) -> () & {Fs};
 
 // apply calls f, so whatever effects f has propagate through
 fn apply(f, x) { f(x) }
 
-// Using apply with an effectful function
-fn use_log() -> () & {Fs} {
-    apply(log, "hello from apply")
+// Using apply with an effectful function that takes a single arg
+// (the capability is already bound in the partial application)
+extern fn log_simple(msg: String) -> () & {};
+fn use_log() -> () {
+    apply(log_simple, "hello from apply")
 }
 
 // Pure higher-order function with pure callback

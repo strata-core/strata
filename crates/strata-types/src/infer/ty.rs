@@ -2,7 +2,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use strata_ast::span::Span;
 
-use crate::effects::{EffectRow, EffectVarId};
+use crate::effects::{CapKind, EffectRow, EffectVarId};
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
@@ -52,6 +52,9 @@ pub enum Ty {
         name: String,
         args: Vec<Ty>,
     },
+    /// Capability type — gates access to the corresponding effect.
+    /// A leaf type (no type arguments, no free variables).
+    Cap(CapKind),
     /// The bottom type for diverging expressions (return, panic, etc.)
     /// Never unifies with any type (as a subtype of all types).
     /// This prevents "unreachable code" unification failures.
@@ -110,6 +113,22 @@ impl Ty {
     #[inline]
     pub fn list(elem: Ty) -> Self {
         Ty::List(Box::new(elem))
+    }
+
+    /// Create a capability type.
+    #[inline]
+    pub fn cap(kind: CapKind) -> Self {
+        Ty::Cap(kind)
+    }
+    /// Convenience: FsCap type.
+    #[inline]
+    pub fn fs_cap() -> Self {
+        Ty::Cap(CapKind::Fs)
+    }
+    /// Convenience: NetCap type.
+    #[inline]
+    pub fn net_cap() -> Self {
+        Ty::Cap(CapKind::Net)
     }
 
     /// Create an ADT type with the given name and type arguments
@@ -188,6 +207,7 @@ impl fmt::Display for Ty {
                     write!(f, ">")
                 }
             }
+            Ty::Cap(kind) => write!(f, "{}", kind.type_name()),
             Ty::Never => write!(f, "!"),
         }
     }
@@ -276,7 +296,7 @@ pub enum Constraint {
 /// Find free type variables in a type
 pub fn free_vars(ty: &Ty) -> HashSet<TypeVarId> {
     match ty {
-        Ty::Const(_) | Ty::Never => HashSet::new(),
+        Ty::Const(_) | Ty::Never | Ty::Cap(_) => HashSet::new(),
         Ty::Var(id) => {
             let mut set = HashSet::new();
             set.insert(*id);
@@ -311,7 +331,7 @@ pub fn free_vars(ty: &Ty) -> HashSet<TypeVarId> {
 /// Find free effect variables in a type
 pub fn free_effect_vars(ty: &Ty) -> HashSet<EffectVarId> {
     match ty {
-        Ty::Const(_) | Ty::Never | Ty::Var(_) => HashSet::new(),
+        Ty::Const(_) | Ty::Never | Ty::Var(_) | Ty::Cap(_) => HashSet::new(),
         Ty::Arrow(params, ret, eff) => {
             let mut set = HashSet::new();
             for param in params {

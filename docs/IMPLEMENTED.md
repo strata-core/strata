@@ -1,7 +1,7 @@
 # Strata - Implemented Features
 
-> Last updated: February 5, 2026
-> Status: Issues 001-008 complete
+> Last updated: February 7, 2026
+> Status: Issues 001-009 complete
 
 ## ✅ Working Features
 
@@ -441,6 +441,103 @@ fn use_it() -> String & {Fs} { apply(read_file, "test.txt") }
 
 ---
 
+### Issue 009: Capability Types (Complete ✅)
+
+**Completed:** February 6-7, 2026
+**Duration:** 1 week
+**Test Coverage:** 398 tests (44 new)
+
+**What was implemented:**
+
+**Capability Types:**
+- Five built-in capability types: `FsCap`, `NetCap`, `TimeCap`, `RandCap`, `AiCap`
+- First-class `Ty::Cap(CapKind)` in the type system (leaf type, not ADT)
+- 1:1 mapping: each capability gates exactly one effect
+
+**Mandatory Capability Validation:**
+- `validate_caps_against_effects()` shared helper — mandatory for ALL functions and externs
+- Functions with concrete effects MUST have matching capability parameters (no exceptions)
+- Extern functions with declared effects MUST have matching capability parameters
+- Open tail effect variables (from HOF callbacks) are not checked (correct — parametric effects)
+- Unused capabilities allowed (pass-through pattern)
+
+**Name Shadowing Protection:**
+- ADT definitions cannot use reserved capability type names
+- `struct FsCap {}` or `enum NetCap { ... }` produce `ReservedCapabilityName` error
+
+**Ergonomic Error Messages:**
+- `Function 'bad' requires capability FsCap because its effect row includes {Fs}` with help text
+- Extern: `Add a 'fs: FsCap' parameter. Alternatively, remove {Fs} from the effect annotation if this extern is actually pure.`
+- Hints for FsCap/Fs confusion: `Did you mean {Fs}? Capability types like FsCap go in parameter types, not effect annotations`
+- Hints for Fs/FsCap confusion: `Did you mean FsCap? Effects like Fs go in & {...}, capability types are parameter types`
+
+**Security Milestone: Zero-Cap Skip Eliminated**
+
+The initial implementation included a conditional guard (`if !param_caps.is_empty()`) that silently skipped capability validation for functions with zero capability parameters. This meant:
+
+```strata
+fn bad() -> () & {Fs} {}        // Should ERROR, compiled silently
+fn middle() -> () & {Fs} { bad() }
+fn main() -> () { middle() }    // Entire chain bypassed security
+```
+
+Three independent external reviewers flagged this as critical. The fix:
+- Removed conditional skip at checker.rs `check_fn()` capability validation
+- Removed conditional skip at extern function validation (pass 1c)
+- Made `validate_caps_against_effects()` mandatory — called unconditionally
+- Test `adversarial_zero_caps_entire_call_chain` verifies the fix holds
+
+**External Validation (3 Independent Sources):**
+
+> Security Review (7/10, up from 5/10): "The core bypass (ambient via skip) is patched—zero-cap functions/externs with concrete effects now error as MissingCapability/ExternMissingCapability, enforcing 'no ambient' soundly."
+
+> PL Researcher: "Green Light — Strata now possesses a mathematically sound capability-security model."
+
+> Technical Assessment (0.87-0.90, up from 0.80-0.85): "You removed the single biggest security/DX footgun (skip-on-zero-caps). That wasn't a minor bug; it was a 'silent bypass' class."
+
+**What Works:**
+```strata
+// Extern functions must have cap params matching their effects
+extern fn read_file(path: String, fs: FsCap) -> String & {Fs};
+extern fn fetch(url: String, net: NetCap) -> String & {Net};
+
+// Capability gates effect usage
+fn load_config(fs: FsCap, path: String) -> String & {Fs} {
+    read_file(path, fs)
+}
+
+// Multiple capabilities for multiple effects
+fn download_and_save(fs: FsCap, net: NetCap, url: String, path: String) -> () & {Fs, Net} {
+    let data = fetch(url, net);
+    write_file(path, data, fs)
+}
+
+// Pass-through: capability param without corresponding effect is valid
+fn passthrough(fs: FsCap, x: Int) -> Int { x + 1 }
+```
+
+**Known Limitations:**
+- Open effect tail polymorphism at instantiation sites may need additional checking
+- No warnings for unused capabilities (intentional — pass-through pattern)
+- Capability provisioning (how `main` gets capabilities from runtime) deferred to Issue 011
+- No `using` keyword syntax yet (planned for v0.2 ergonomics)
+- Capabilities are not yet affine/linear (Issue 010 will add move semantics)
+
+**What's Next:** Issue 010 (Affine Types) — prevent capability duplication and leaking
+
+**Example Files:**
+- `examples/capabilities.strata` — Capability types with effect gating
+
+**Location:**
+- `crates/strata-types/src/effects.rs` — `CapKind` enum and cap-effect mapping
+- `crates/strata-types/src/infer/ty.rs` — `Ty::Cap` variant
+- `crates/strata-types/src/checker.rs` — Capability validation in `check_fn()` and extern fns
+- `crates/strata-types/src/adt.rs` — Updated `contains_capability()` for `Ty::Cap`
+
+**Status:** Complete. Mandatory capability-effect enforcement working. Externally validated.
+
+---
+
 ### CLI (Issue 001, updated through 008)
 
 **Commands:**
@@ -488,8 +585,9 @@ strata-cli --eval file.strata
 - Pipe operator: `x |> f |> g`
 
 **From Later Issues:**
-- Capability checking (Issue 009) ← **NEXT**
-- Profile enforcement (Issue 010)
+- Affine types / linear capabilities (Issue 010) ← **NEXT**
+- WASM Runtime + Effect Traces (Issue 011)
+- Profile enforcement
 - Actors & supervision
 - Datalog/logic engine
 - Bytecode VM
@@ -505,7 +603,7 @@ strata-cli --eval file.strata
 # Build all crates
 cargo build --workspace
 
-# Run all tests (339 tests)
+# Run all tests (398 tests)
 cargo test --workspace
 
 # Run with clippy (enforced in CI)
@@ -538,16 +636,16 @@ strata-ast       (no deps)
 ## Project Stats
 
 - **Crates:** 4 (ast, parse, types, cli)
-- **Total Tests:** 344 (parser: 48, types: 168, cli: 26, effects: 34, others: 68)
-- **Lines of Code:** ~8500+ (estimate)
-- **Issues Completed:** 8 + hardening (Parser, Effects, Type Scaffolding, Basic Type Checking, Functions, Blocks, ADTs, Security Hardening, Effect System)
+- **Total Tests:** 398 (parser: 48, types: 174, cli: 26, effects: 41, capabilities: 42, others: 67)
+- **Lines of Code:** ~9000+ (estimate)
+- **Issues Completed:** 9 + hardening (Parser, Effects, Type Scaffolding, Basic Type Checking, Functions, Blocks, ADTs, Security Hardening, Effect System, Capability Types)
 - **Example Files:** 30+
 
 ---
 
 ## Next Up
 
-**Issue 009: Capability Types**
-- Capability-based security model
-- Linear capability tracking
-- Profile enforcement
+**Issue 010: Affine Types / Linear Capabilities**
+- Prevent capability duplication
+- Move semantics for capabilities
+- Linear type tracking

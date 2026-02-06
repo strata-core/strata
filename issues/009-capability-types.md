@@ -1,6 +1,6 @@
 # Issue 009: Capability Types
 
-**Status:** Ready to start
+**Status:** Complete
 **Estimated time:** 5-7 days
 **Phase:** 3 (Effect System)
 **Depends on:** Issue 008 (Effect System)
@@ -197,3 +197,7 @@ extern fn bad_extern(path: String) -> String & {Fs};  // Error
 1. **Can capabilities be returned from functions?** Yes, for now. Issue 010 will add move semantics.
 2. **Can capabilities be in tuples?** No — same restriction as ADTs.
 3. **Capability syntax: `fs: FsCap` vs `using fs: FsCap`?** Using plain parameter syntax for v0.1. `using` syntax is a v0.2 consideration for ergonomics.
+
+## Known Limitations Discovered
+
+- **Arrow type effect annotations silently dropped:** Effect annotations on arrow types in type expressions (e.g., `fn(Int) -> Int & {Fs}` in an ADT field) are parsed but silently dropped by the type checker, defaulting the slot to pure — sound but a UX trap; discovered during adversarial security testing.

@@ -16,6 +16,123 @@ Strata is a general-purpose, strongly typed programming language designed for **
 - **Deterministic replay** — Seedable RNG/Time with audit logs
 - **Multi-target** — Native AOT, bytecode VM, WASM/WASI
 
+---
+
+## Why Strata?
+
+### The Problem: Automation Safety Gap
+
+Modern infrastructure runs on scripts that can "silently nuke prod." Current options force a choice:
+
+**High ergonomics, low safety:**
+- Python/Bash for automation
+- Fast to write, dangerous in production
+- No type safety, no effect tracking
+- Scripts grow into unmaintainable systems
+
+**High safety, high complexity:**
+- Rust/Haskell for critical systems
+- Strong guarantees, steep learning curve
+- Too complex for ops teams under pressure
+
+**The gap:** No language offers both safety AND ergonomics for automation.
+
+### Strata's Approach: Zero-Tax Safety
+
+Strata makes the **secure way the easy way**:
+
+```strata
+// Capabilities make authority explicit
+fn deploy(
+    model: Model,
+    using fs: FsCap,
+    using net: NetCap
+) -> Result<Deployment> & {Fs, Net} {
+    validate_model(model, using fs)?;
+    upload(model, using net)
+}
+```
+
+**What you get:**
+- **Type safety** without ceremony (Hindley-Milner inference)
+- **Effect tracking** without complexity (visible in function types)
+- **Capability security** without sandboxes (no ambient authority)
+- **Deterministic replay** without instrumentation (built-in tracing)
+
+### Four Problems Strata Solves
+
+**1. Supply Chain Security**
+
+When you import a library in Python/Node.js, it can read your SSH keys, scan your network, and exfiltrate data. Strata's capability security provides **intra-process isolation** - a JSON library with `JsonCap` mathematically cannot perform network I/O.
+
+**2. Audit Trails**
+
+To understand what a script does today, you read every line of code. In Strata, the function signature is a contract:
+
+```strata
+fn deploy(cfg: Config) -> Result<o> & {Fs, Net, Env}
+```
+
+Security teams can grep for `{Net}` effects in sensitive environments. **Compliance becomes type checking.**
+
+**3. Reproducible Failures**
+
+When automation fails at 3 AM, you can't reproduce it locally. Strata's effect traces capture every I/O operation. Run `strata replay trace.json` and debug the exact failure deterministically.
+
+**4. AI Agent Safety**
+
+AI agents making autonomous decisions need guardrails. Strata's capability security prevents agents from doing unauthorized actions:
+
+```strata
+// Agent gets explicit capabilities, can't exceed them
+fn ai_agent(
+    task: Task,
+    using read_only: FsCap,  // Can read files
+    using ai: AiCap           // Can call AI models
+) -> Result<Analysis> & {Fs, Ai} {
+    // Cannot write files or access network
+    // Capabilities enforced by type system
+}
+```
+
+### When to Use Strata
+
+**Use Strata for:**
+- ✅ Deployment scripts that touch production
+- ✅ AI agent orchestration workflows
+- ✅ Automation requiring audit trails (SOC 2, ISO 27001)
+- ✅ Scripts that call AI models or APIs
+- ✅ Incident response playbooks
+- ✅ CI/CD pipelines with sensitive access
+
+**Don't use Strata for:**
+- ❌ High-performance computing (use Rust)
+- ❌ System programming (use Rust/C++)
+- ❌ Quick one-off scripts (use Python/Bash)
+- ❌ Applications with millisecond latency requirements
+
+### What Makes Strata Different
+
+**vs Python/Bash:**
+- ✅ Type safety catches bugs at compile time
+- ✅ Effect tracking makes I/O visible in types
+- ✅ Capability security prevents unauthorized access
+- ✅ Deterministic replay for debugging
+
+**vs Rust:**
+- ✅ No lifetimes, no borrow checker
+- ✅ Hindley-Milner inference (feels like Python)
+- ✅ Effect types built-in (not "just code")
+- ✅ Designed for ops teams, not systems programmers
+
+**vs Workflow Platforms (n8n, Temporal, Airflow):**
+- ✅ Type-safe by default
+- ✅ Effect-tracked workflows
+- ✅ Capability-gated operations
+- ✅ Code-first (not visual)
+
+---
+
 ## Current Status
 
 ✅ **Working:**
@@ -58,11 +175,14 @@ Strata is a general-purpose, strongly typed programming language designed for **
 - Parser depth guards balanced on all error paths
 
 📋 **Next Up:**
-- Issue 009-010: Capabilities, profiles
+- Issue 009-010: Capabilities, affine types
+- Issue 011: WASM runtime + effect traces + deterministic replay
 
 **Target v0.1:** November 2026 - February 2027
 
 See [`docs/IN_PROGRESS.md`](docs/IN_PROGRESS.md) for details.
+
+---
 
 ## Quick Start
 
@@ -78,6 +198,8 @@ cargo run -p strata-cli -- examples/add.strata
 # Run tests (354 tests)
 cargo test --workspace
 ```
+
+---
 
 ## Example Code
 
@@ -149,6 +271,8 @@ fn add(x: Int, y: Int) -> Int { x + y }
 
 **Built-in effects:** `Fs` (filesystem), `Net` (network), `Time` (clock), `Rand` (randomness), `Ai` (model calls)
 
+---
+
 ## Development
 
 ```bash
@@ -165,17 +289,21 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt
 ```
 
+---
+
 ## Roadmap
 
-**Phase 1 (Complete):** Parser, AST, basic type checking ✅
-**Phase 2 (Complete):** Functions ✅, hardening ✅, blocks ✅, ADTs ✅
-**Phase 3 (Current):** Effect system ✅, capabilities, profiles
-**Phase 4:** Runtime, stdlib, WASM compilation, replay
+**Phase 1 (Complete):** Parser, AST, basic type checking ✅  
+**Phase 2 (Complete):** Functions ✅, hardening ✅, blocks ✅, ADTs ✅  
+**Phase 3 (Current):** Effect system ✅, capabilities, affine types  
+**Phase 4:** Runtime, stdlib, WASM compilation, replay  
 **Phase 5:** Tooling, docs, killer demos, v0.1 launch  
 
 **v0.1 Target:** November 2026 - February 2027
 
 See [`docs/roadmap.md`](docs/roadmap.md) for detailed plans.
+
+---
 
 ## Philosophy
 
@@ -186,9 +314,15 @@ See [`docs/roadmap.md`](docs/roadmap.md) for detailed plans.
 - Clarity over cleverness
 - **Soundness over speed** — A type system that lies is worse than no type system
 
+**"Rigor over Ergonomics"** — If an automation engineer has to type `using fs: FsCap` to delete a file, that explicitness is the feature, not a bug. Strata makes authority visible, not hidden.
+
+---
+
 ## Contributing
 
 This is currently a personal project. Once it reaches a more stable state (post-Issue 010), contributions will be welcome.
+
+---
 
 ## License
 
@@ -198,4 +332,5 @@ MIT License - see [`LICENSE`](LICENSE) for details.
 
 **Taglines:**  
 *"Layered safety by design."*  
-*"It explains itself."*
+*"It explains itself."*  
+*"The secure way is the easy way."*

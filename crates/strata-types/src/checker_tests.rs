@@ -2937,7 +2937,7 @@ fn test_destructuring_let_literal_error() {
 #[test]
 fn test_capability_in_let_binding_direct() {
     // struct NetCap {}
-    // let x = NetCap {};  // should fail - binding holds a capability
+    // struct NetCap {} — now rejected because NetCap is a reserved capability name
     let mut tc = TypeChecker::new();
     let module = Module {
         items: vec![
@@ -2955,16 +2955,16 @@ fn test_capability_in_let_binding_direct() {
     assert!(result.is_err(), "expected error but got Ok");
     let err = result.unwrap_err();
     assert!(
-        matches!(err, TypeError::CapabilityInBinding { .. }),
-        "expected CapabilityInBinding but got: {:?}",
+        matches!(err, TypeError::ReservedCapabilityName { .. }),
+        "expected ReservedCapabilityName but got: {:?}",
         err
     );
 }
 
 #[test]
 fn test_capability_in_let_binding_tuple() {
-    // struct NetCap {}
-    // let x = (1, NetCap {});  // should fail - tuple contains a capability
+    // struct NetCap {} — now rejected because NetCap is a reserved capability name
+    // (CapabilityInBinding is tested via integration tests in capabilities.rs)
     let mut tc = TypeChecker::new();
     let module = Module {
         items: vec![
@@ -2985,7 +2985,7 @@ fn test_capability_in_let_binding_tuple() {
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
-        TypeError::CapabilityInBinding { .. }
+        TypeError::ReservedCapabilityName { .. }
     ));
 }
 

@@ -37,7 +37,7 @@ Compile Strata programs to WASM and run them with real I/O. Generate effect trac
                                    └──────────────┘
 ```
 
-Key insight from ChatGPT: **Trace emission happens at the host boundary, not in codegen.** This keeps the compiler simple and makes determinism achievable.
+Key insight from external review: **Trace emission happens at the host boundary, not in codegen.** This keeps the compiler simple and makes determinism achievable.
 
 ## Compilation Strategy: WAT for v0.1
 

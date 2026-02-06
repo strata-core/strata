@@ -224,9 +224,9 @@ impl AdtRegistry {
 }
 
 /// Check if a type name is a capability type.
-/// Capabilities cannot be stored in ADTs (until linear types are added).
+/// Delegates to `CapKind::from_name` for the canonical check.
 pub fn is_capability_type(name: &str) -> bool {
-    matches!(name, "NetCap" | "FsCap" | "TimeCap" | "RandCap" | "AiCap")
+    crate::effects::CapKind::from_name(name).is_some()
 }
 
 /// Check if a type contains any capability types.
@@ -234,6 +234,7 @@ pub fn is_capability_type(name: &str) -> bool {
 pub fn contains_capability(ty: &Ty) -> bool {
     match ty {
         Ty::Const(_) | Ty::Var(_) | Ty::Never => false,
+        Ty::Cap(_) => true,
         Ty::Adt { name, args } => is_capability_type(name) || args.iter().any(contains_capability),
         Ty::Arrow(params, ret, _eff) => {
             params.iter().any(contains_capability) || contains_capability(ret)
@@ -247,6 +248,7 @@ pub fn contains_capability(ty: &Ty) -> bool {
 /// Returns None if no capability type is found.
 pub fn find_capability_name(ty: &Ty) -> Option<String> {
     match ty {
+        Ty::Cap(kind) => Some(kind.type_name().to_string()),
         Ty::Adt { name, args } => {
             if is_capability_type(name) {
                 Some(name.clone())

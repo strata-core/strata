@@ -52,6 +52,67 @@ pub const ALL_EFFECTS: &[Effect] = &[
     Effect::Ai,
 ];
 
+/// Capability kind — each capability gates exactly one effect.
+///
+/// Capabilities are first-class types in Strata's type system (`Ty::Cap`).
+/// A function that performs a concrete effect must have the corresponding
+/// capability type in its parameter list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CapKind {
+    Fs,
+    Net,
+    Time,
+    Rand,
+    Ai,
+}
+
+impl CapKind {
+    /// Which effect does this capability gate?
+    pub fn gates_effect(self) -> Effect {
+        match self {
+            CapKind::Fs => Effect::Fs,
+            CapKind::Net => Effect::Net,
+            CapKind::Time => Effect::Time,
+            CapKind::Rand => Effect::Rand,
+            CapKind::Ai => Effect::Ai,
+        }
+    }
+
+    /// Reverse mapping: which capability gates this effect?
+    pub fn from_effect(e: Effect) -> CapKind {
+        match e {
+            Effect::Fs => CapKind::Fs,
+            Effect::Net => CapKind::Net,
+            Effect::Time => CapKind::Time,
+            Effect::Rand => CapKind::Rand,
+            Effect::Ai => CapKind::Ai,
+        }
+    }
+
+    /// Parse a capability type name (e.g., "FsCap") to a CapKind.
+    pub fn from_name(name: &str) -> Option<CapKind> {
+        match name {
+            "FsCap" => Some(CapKind::Fs),
+            "NetCap" => Some(CapKind::Net),
+            "TimeCap" => Some(CapKind::Time),
+            "RandCap" => Some(CapKind::Rand),
+            "AiCap" => Some(CapKind::Ai),
+            _ => None,
+        }
+    }
+
+    /// Display name of the capability type.
+    pub fn type_name(self) -> &'static str {
+        match self {
+            CapKind::Fs => "FsCap",
+            CapKind::Net => "NetCap",
+            CapKind::Time => "TimeCap",
+            CapKind::Rand => "RandCap",
+            CapKind::Ai => "AiCap",
+        }
+    }
+}
+
 /// A row of effects, optionally open (with a tail variable).
 ///
 /// - Closed row: `{ Fs, Net }` — `concrete = 0b011, tail = None`

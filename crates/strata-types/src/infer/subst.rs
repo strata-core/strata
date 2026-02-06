@@ -164,7 +164,7 @@ impl Subst {
                     Ok(Ty::Var(*v))
                 }
             }
-            Ty::Const(_) | Ty::Never => Ok(t.clone()),
+            Ty::Const(_) | Ty::Never | Ty::Cap(_) => Ok(t.clone()),
             Ty::Arrow(params, ret, eff) => {
                 let new_params: Result<Vec<Ty>, SubstError> =
                     params.iter().map(|p| self.apply(p)).collect();

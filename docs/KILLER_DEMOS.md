@@ -1,26 +1,45 @@
-# Strata Killer Demos for v0.1
+# Strata Killer Demos
 
-This document describes the two primary demonstrations that prove Strata's value proposition for the v0.1 release.
+This document describes demonstrations that prove Strata's value proposition.
 
 **Target User:** Automation Engineer (AI/ML Ops, SRE, DevOps, MLOps, Security)
 
 **Core Value Propositions:**
-1. **Explainability** - Every side effect is traced and auditable
-2. **Safety** - Type-safe, capability-gated, no ambient authority
+1. **Safety** - Type-safe, capability-gated, no ambient authority
+2. **Explainability** - Every side effect is traced and auditable
 3. **Reproducibility** - Deterministic replay of failures from effect traces
 4. **Clarity** - Explicit effects make system behavior visible
 
 ---
 
-## Demo 1: Safe Model Deployment Script
+## Demo Strategy
 
-**Use Case:** Deploy an ML model to production with full auditability
+**v0.1 Core Demos (3 - Ship These):**
+Focused, achievable demos that prove core technical capabilities and value proposition. These will be fully working for v0.1 launch.
+
+**v0.2 Expansion Demos (3 - Documented Now, Built Later):**
+Broader use cases showing Strata's versatility across different domains (traditional ops, PII handling, cloud security). These demonstrate market breadth and are documented now but built after v0.1 proves core value.
+
+---
+
+# PART 1: v0.1 Core Demos (Ship These)
+
+## Demo 1: Model Deployment with Deterministic Replay
+
+**Use Case:** Deploy an ML model to production with full auditability and debuggability
 
 **Target Pain Points:**
 - Deployment failures are hard to debug (what actually happened?)
 - Scripts can accidentally hit production when they should hit staging
 - No compile-time safety for configuration errors
 - Hard to trace which file/API call caused a failure
+- Can't reproduce failures locally (environment changed)
+
+**What This Demo Proves:**
+✅ Effect traces provide complete audit trail  
+✅ Capability security prevents unauthorized access  
+✅ Deterministic replay enables local debugging of production failures  
+✅ Type safety catches config errors before deployment
 
 ### Code Example
 
@@ -31,7 +50,7 @@ fn deploy_model(
     using fs: FsCap,
     using net: NetCap,
     using time: TimeCap
-) -> Result<DeploymentId, DeployError> & {FS, Net, Time} {
+) -> Result<DeploymentId, DeployError> & {Fs, Net, Time} {
     // 1. Load and validate model file
     let model_data = read_file(model_path, using fs)?;
     let checksum = hash(model_data);
@@ -64,402 +83,255 @@ fn deploy_model(
 
 ```json
 {
-  "function": "deploy_model",
-  "start_time": "2026-01-31T10:30:00Z",
+  "program": "deploy_model.strata",
+  "started_at": "2026-08-15T10:30:00.000Z",
+  "finished_at": "2026-08-15T10:30:01.500Z",
+  "result": { "ok": "prod-456" },
   "effects": [
     {
-      "timestamp": "2026-01-31T10:30:00.100Z",
-      "effect": "FS.Read",
-      "path": "/models/sentiment-v2.pkl",
-      "bytes": 1048576,
-      "checksum": "abc123..."
+      "seq": 0,
+      "timestamp": "2026-08-15T10:30:00.100Z",
+      "effect": "Fs",
+      "operation": "read",
+      "inputs": { "path": "/models/sentiment-v2.pkl" },
+      "outputs": { "bytes": 1048576, "checksum": "abc123..." },
+      "duration_ms": 50
     },
     {
-      "timestamp": "2026-01-31T10:30:00.250Z",
-      "effect": "Time.Log",
-      "message": "Model loaded: 1048576 bytes, checksum: abc123..."
+      "seq": 1,
+      "timestamp": "2026-08-15T10:30:00.250Z",
+      "effect": "Time",
+      "operation": "log",
+      "inputs": { "message": "Model loaded: 1048576 bytes, checksum: abc123..." }
     },
     {
-      "timestamp": "2026-01-31T10:30:00.300Z",
-      "effect": "Net.Post",
-      "url": "https://ml-api.company.com/staging/upload",
-      "request_bytes": 1048576,
-      "response_status": 200,
-      "response_body": "{\"staging_id\": \"stg-789\"}"
+      "seq": 2,
+      "timestamp": "2026-08-15T10:30:00.300Z",
+      "effect": "Net",
+      "operation": "post",
+      "inputs": { 
+        "url": "https://ml-api.company.com/staging/upload",
+        "body_bytes": 1048576
+      },
+      "outputs": {
+        "status": 200,
+        "body": "{\"staging_id\": \"stg-789\"}"
+      },
+      "duration_ms": 800
     },
     {
-      "timestamp": "2026-01-31T10:30:01.500Z",
-      "effect": "Net.Get",
-      "url": "https://ml-api.company.com/validate/stg-789",
-      "response_status": 200,
-      "response_body": "{\"passed\": true, \"errors\": []}"
-    },
-    {
-      "timestamp": "2026-01-31T10:30:01.600Z",
-      "effect": "Net.Post",
-      "url": "https://ml-api.company.com/promote/stg-789",
-      "response_status": 200,
-      "response_body": "{\"prod_id\": \"prod-456\"}"
+      "seq": 3,
+      "timestamp": "2026-08-15T10:30:01.500Z",
+      "effect": "Net",
+      "operation": "get",
+      "inputs": { "url": "https://ml-api.company.com/validate/stg-789" },
+      "outputs": {
+        "status": 200,
+        "body": "{\"passed\": true, \"errors\": []}"
+      },
+      "duration_ms": 200
     }
   ],
-  "result": "Ok(\"prod-456\")",
   "duration_ms": 1500
 }
 ```
 
-### Demo Narrative
+### Demo Narrative (7 minutes)
 
-**Setup:** Show traditional Python deployment script with:
-- Hidden side effects
-- Runtime type errors
-- Hard-to-debug failures
-- No audit trail
+**Act 1: The Problem (2 minutes)**
 
-**Strata version:**
-1. Show the code with explicit effects
-2. Show compile-time type checking catching config errors
-3. Show capability gating preventing accidental prod access
-4. Run the deployment successfully
-5. Show the effect trace (full audit trail)
-6. Simulate a failure (validation fails)
-7. Use replay to reproduce the exact failure state
-8. Fix the issue and re-run
+Show traditional Python deployment script:
+```python
+# deploy.py - typical Python script
+import requests
 
-**Wow moments:**
-- "Every file read, HTTP call, and log is in the trace"
-- "Can't accidentally hit prod without the right capability"
-- "Type checker catches config errors before running"
-- "Replay shows exactly what happened during the failure"
+model = open("/models/sentiment-v2.pkl", "rb").read()
+r = requests.post("https://ml-api.company.com/upload", data=model)
+print(f"Deployed: {r.json()['id']}")
+```
+
+**Problems demonstrated:**
+- No type safety (typo in URL? Runtime error)
+- Hidden side effects (what if this also calls Datadog? Slack? You don't know)
+- Can't reproduce failures (if API returns 500, can't replay locally)
+- No audit trail (what EXACTLY happened?)
+
+**Act 2: Strata Solution (3 minutes)**
+
+1. **Show the code** with explicit effects and capabilities
+2. **Compile-time safety:**
+   ```bash
+   $ strata build deploy.strata
+   ERROR: Type mismatch at line 12
+     Expected: Url
+     Got: String
+   ```
+3. **Run successful deployment:**
+   ```bash
+   $ strata run deploy.strata --trace deployment.json
+   Deployment complete: prod-456
+   Trace saved to deployment.json
+   ```
+4. **Show effect trace:** Full audit trail of every operation
+
+**Act 3: The Power of Replay (2 minutes)**
+
+Simulate failure scenario:
+```bash
+# Deployment fails in production at 3 AM
+$ strata run deploy.strata --trace failed.json
+ERROR: ValidationFailed: Model checksum mismatch
+
+# Next morning, debug locally with NO network access
+$ strata replay failed.json
+# Replays exact sequence, shows failure at line 45
+# Can inspect state, add logging, fix bug
+# All without touching production
+```
+
+**Wow Moments:**
+1. **"Every file read, HTTP call, and log is in the trace"** - Complete audit trail
+2. **"Can't accidentally hit prod without the right capability"** - Capability security
+3. **"Type checker catches config errors before running"** - Compile-time safety
+4. **"Replay shows exactly what happened during the failure"** - Deterministic debugging
+
+### Requirements for Demo
+
+**Language features:**
+- [x] Type checking with inference
+- [x] Functions
+- [x] Control flow
+- [x] ADTs (`Result<T, E>`)
+- [x] Effect syntax (`& {Fs, Net, Time}`)
+- [ ] Capabilities (`using cap: Cap`)
+- [ ] Effect tracing runtime
+- [ ] Replay runner
+
+**Standard library:**
+- `Result<T, E>`, `Option<T>`
+- File I/O: `read_file`
+- HTTP: `http_get`, `http_post`, `upload_model`, `validate_deployment`, `promote_to_production`
+- Time: `log()`
+- Utilities: `hash()`, `len()`
 
 ---
 
-## Demo 2: AI-Powered Incident Response Workflow
+## Demo 2: Meta-Agent Orchestration with Affine Types
 
-**Use Case:** Automated incident response with traceable AI decision-making
+**Use Case:** AI agents working together safely with enforced capability constraints
 
 **Target Pain Points:**
-- AI agent actions are opaque (what did it decide and why?)
-- Multi-step workflows fail midway and it's hard to know where/why
-- AI calls can rack up costs with no visibility
-- Hard to audit whether AI agent followed safe procedures
+- AI agents are opaque (what did they decide and why?)
+- Agents frequently exceed their intended scope (security risk)
+- Multi-agent workflows fail midway and it's hard to know where/why
+- AI agents can rack up costs with no visibility
+- Hard to audit whether agents followed procedures
+
+**What This Demo Proves:**
+✅ Affine types prevent capability duplication and leaking  
+✅ Compiler enforces agent capability boundaries  
+✅ Every AI decision is traced with reasoning  
+✅ Cost tracking built-in  
+✅ Deterministic replay for multi-agent debugging
 
 ### Code Example
 
 ```strata
-fn incident_response_workflow(
-    alert: Alert,
-    using net: NetCap,
+// Define agent roles with minimal, explicit capabilities
+
+fn architect_agent(
+    task: FeatureRequest,
+    using fs_read: FsReadCap,
+    using ai: AiCap
+) -> Result<DesignDoc> & {Fs, Ai} {
+    // CAN: Read code, generate design
+    // CANNOT: Write files, commit code, create PRs
+    
+    let codebase = scan_directory("/src", using fs_read)?;
+    let design = ai_generate(
+        prompt: "Design approach for: {}",
+        context: codebase,
+        model: "claude-sonnet-4",
+        using ai
+    )?;
+    
+    Ok(design)
+}
+
+fn developer_agent(
+    design: DesignDoc,
     using fs: FsCap,
-    using ai: AiCap,
-    using time: TimeCap
-) -> Result<Resolution, IncidentError> & {Net, FS, AI, Time} {
+    using git: GitCap,
+    using ai: AiCap
+) -> Result<CommitSha> & {Fs, Git, Ai} {
+    // CAN: Read/write code, commit
+    // CANNOT: Create PRs, approve, merge
     
-    // Step 1: Gather context
-    log("=== INCIDENT RESPONSE: {} ===", alert.id, using time);
-    log("Service: {}, Severity: {}", alert.service, alert.severity, using time);
+    let code = ai_generate_code(design, using ai)?;
+    write_files(code.files, using fs)?;
     
-    let logs = fetch_service_logs(
-        alert.service,
-        alert.timerange,
-        using net
+    let sha = git_commit(
+        message: "Implement feature per design",
+        using git
     )?;
-    log("Fetched {} log lines", len(logs), using time);
     
-    // Step 2: AI analysis
-    log("Requesting AI analysis", using time);
-    let analysis = ai_analyze(
-        prompt: "Analyze these service logs and identify the root cause of errors",
-        context: logs,
-        model: "claude-sonnet-4",
+    Ok(sha)
+}
+
+fn reviewer_agent(
+    commit_sha: CommitSha,
+    using fs_read: FsReadCap,
+    using github: GitHubCap,  // AFFINE - use-at-most-once
+    using ai: AiCap
+) -> Result<PrUrl> & {Fs, GitHub, Ai} {
+    // CAN: Read code, create PR, comment
+    // CANNOT: Approve own PRs, merge, modify code
+    
+    let diff = read_commit_diff(commit_sha, using fs_read)?;
+    let review = ai_review_code(diff, using ai)?;
+    
+    // Create PR - consumes GitHubCap (affine!)
+    let pr_url = github_create_pr(
+        title: "Feature implementation",
+        body: review.summary,
+        using github  // github is MOVED here
+    )?;
+    
+    // COMPILER ERROR if you try to use 'github' again:
+    // github_delete_repo(using github)?;  // ERROR: use of moved value
+    
+    Ok(pr_url)
+}
+
+// Orchestrator coordinates all agents
+fn orchestrate_feature(
+    request: FeatureRequest,
+    using fs: FsCap,
+    using git: GitCap,
+    using github: GitHubCap,  // Affine - prevents duplication
+    using ai: AiCap
+) -> Result<PrUrl> & {Fs, Git, GitHub, Ai} {
+    
+    // Phase 1: Architecture (read-only)
+    let fs_read = fs.as_read_only();  // Derive read-only cap
+    let design = architect_agent(request, using fs_read, using ai)?;
+    
+    // Phase 2: Implementation (write access)
+    let commit_sha = developer_agent(design, using fs, using git, using ai)?;
+    
+    // Phase 3: Review & PR creation
+    // GitHubCap is CONSUMED here - prevents accidental reuse
+    let pr_url = reviewer_agent(
+        commit_sha,
+        using fs_read,
+        using github,  // Moved to reviewer_agent
         using ai
     )?;
-    log("AI analysis complete: {}", analysis.summary, using time);
     
-    // Step 3: Generate remediation steps
-    log("Generating remediation steps", using time);
-    let remediation = ai_generate_steps(
-        prompt: "Generate safe remediation steps for: {}",
-        context: analysis.root_cause,
-        model: "claude-sonnet-4",
-        using ai
-    )?;
-    log("Remediation plan: {} steps", len(remediation.steps), using time);
+    // SAFETY: Can't use 'github' here anymore (moved)
+    // This prevents orchestrator from bypassing review process
     
-    // Step 4: Execute safe actions (with human approval check)
-    let execution_result = if remediation.requires_approval {
-        log("Remediation requires approval, skipping auto-execution", using time);
-        ExecutionResult::RequiresApproval
-    } else {
-        log("Auto-executing safe remediation", using time);
-        execute_safe_remediation(remediation.steps, using net)?
-    };
-    
-    // Step 5: Document incident
-    let report = IncidentReport {
-        alert: alert,
-        analysis: analysis,
-        remediation: remediation,
-        execution: execution_result,
-        timestamp: now(using time),
-    };
-    
-    let report_path = "/incidents/{}.md";
-    write_file(report_path, format_report(report), using fs)?;
-    log("Incident report saved: {}", report_path, using time);
-    
-    Ok(Resolution { report: report_path, status: execution_result })
-}
-```
-
-### Effect Trace Output (Abbreviated)
-
-```json
-{
-  "workflow": "incident_response_workflow",
-  "alert_id": "inc-2026-01-31-001",
-  "start_time": "2026-01-31T14:22:00Z",
-  "effects": [
-    {
-      "step": 1,
-      "timestamp": "2026-01-31T14:22:00.100Z",
-      "effect": "Time.Log",
-      "message": "=== INCIDENT RESPONSE: inc-2026-01-31-001 ==="
-    },
-    {
-      "step": 1,
-      "timestamp": "2026-01-31T14:22:00.200Z",
-      "effect": "Net.Get",
-      "url": "https://logs.company.com/api/search?service=payment-api&time=...",
-      "response_bytes": 52000,
-      "log_lines": 1247
-    },
-    {
-      "step": 2,
-      "timestamp": "2026-01-31T14:22:01.100Z",
-      "effect": "AI.Analyze",
-      "model": "claude-sonnet-4",
-      "prompt_tokens": 5247,
-      "completion_tokens": 823,
-      "reasoning_trace": {
-        "root_cause": "Database connection pool exhausted",
-        "evidence": "Logs show 50 consecutive timeout errors on DB queries",
-        "confidence": 0.92
-      }
-    },
-    {
-      "step": 3,
-      "timestamp": "2026-01-31T14:22:03.500Z",
-      "effect": "AI.Generate",
-      "model": "claude-sonnet-4",
-      "prompt_tokens": 1200,
-      "completion_tokens": 450,
-      "generated_steps": [
-        "1. Restart payment-api service to reset connection pool",
-        "2. Increase connection pool max from 10 to 20",
-        "3. Monitor for 5 minutes to verify resolution"
-      ],
-      "safety_assessment": "safe_for_auto_execution"
-    },
-    {
-      "step": 4,
-      "timestamp": "2026-01-31T14:22:04.000Z",
-      "effect": "Net.Post",
-      "url": "https://api.company.com/services/payment-api/restart",
-      "response_status": 200
-    },
-    {
-      "step": 5,
-      "timestamp": "2026-01-31T14:22:05.000Z",
-      "effect": "FS.Write",
-      "path": "/incidents/inc-2026-01-31-001.md",
-      "bytes": 4096
-    }
-  ],
-  "result": "Ok",
-  "total_duration_ms": 5200,
-  "ai_cost_estimate": "$0.04"
-}
-```
-
-### Demo Narrative
-
-**Setup:** Explain the scenario:
-- Production service is failing
-- Traditional approach: Manual log diving, unclear AI reasoning, hard to audit
-- Strata approach: Automated workflow with full traceability
-
-**Demonstration:**
-1. Trigger alert (simulated service failure)
-2. Watch workflow execute with real-time log output
-3. Show AI making decisions (visible in trace)
-4. Show remediation being auto-executed (safely)
-5. Show generated incident report
-6. **Key moment:** Show the complete effect trace with AI reasoning
-7. Replay the workflow to verify determinism
-8. Show how you can audit: "Did AI follow safe procedures?"
-
-**Wow moments:**
-- "Every AI decision is traced with reasoning"
-- "You can see exactly what the AI concluded and why"
-- "The workflow is reproducible from the trace"
-- "AI calls are capability-gated (can't call AI without explicit permission)"
-- "Cost tracking built-in (every AI call shows token usage)"
-- "Safety checking: AI-generated steps are validated before execution"
-
-### Why This Demo Matters (2026 Context)
-
-**Timing:** AI agents for ops/automation are HOT right now, but:
-- People don't trust them (opaque decision-making)
-- Hard to audit (did the agent do the right thing?)
-- Runaway costs (AI calls without visibility)
-- Safety concerns (what if agent makes destructive changes?)
-
-**Strata solves all of these:**
-- ✅ Transparent: Every AI call is traced with reasoning
-- ✅ Auditable: Effect trace shows complete decision chain
-- ✅ Cost-controlled: Token usage visible in trace
-- ✅ Safe: AI capabilities are explicitly granted, not ambient
-
-**Market positioning:** "Strata is how you build trustworthy AI agents for production operations."
-
----
-
-## Demo Comparison Matrix
-
-| Feature | Traditional Script | Strata |
-|---------|-------------------|--------|
-| **Type Safety** | Runtime errors | Compile-time checking |
-| **Effect Visibility** | Hidden side effects | Explicit in types |
-| **Capability Control** | Ambient authority | Explicit capabilities |
-| **Audit Trail** | Manual logging | Automatic trace |
-| **Reproducibility** | Hard to replay | Deterministic replay |
-| **AI Transparency** | Opaque | Full reasoning trace |
-| **Error Messages** | Stack traces | Type errors with spans |
-
----
-
-## Success Criteria for Demos
-
-**Demo 1 (Deployment) succeeds if:**
-- Audience says: "I wish my deploy scripts had this"
-- They understand effect types from the example
-- They see value in capability gating
-- Effect trace is clearly useful for debugging
-
-**Demo 2 (AI Incident Response) succeeds if:**
-- Audience says: "This is how AI agents should work"
-- They trust the AI more because of traceability
-- They see this as production-ready, not a toy
-- It generates press/discussion in AI ops communities
-
----
-
----
-
-## Demo 3: Multi-LLM Software Orchestrator (The Meta Demo)
-
-**Use Case:** Build software projects using multiple AI models (Claude, ChatGPT, Grok) with capability-constrained roles
-
-**Target Pain Points:**
-- AI agents going rogue and doing things outside their role
-- No visibility into which agent made which decision
-- Hard to debug multi-agent failures
-- Cost tracking across multiple LLM providers
-- Safety concerns about agents with too much power
-
-**Why This Demo Is Special:**
-This is the "dogfooding" demo - using Strata to build the exact type of multi-agent system that Strata was designed for. It's meta-compelling: "We built an agent orchestrator IN the agent orchestration language."
-
-### Code Example
-
-```strata
-// Define specialized agent roles with capability constraints
-capability Architect = {
-  FileSystem: {Read, Write.Designs},
-  Claude: {API},
-  Repo: {Read, Comment}
-}
-
-capability Developer = {
-  FileSystem: {Read, Write.Code},
-  ChatGPT: {API},
-  Repo: {Read, Write, Commit},
-  GitHub: {PullRequest}
-}
-
-capability Reviewer = {
-  FileSystem: {Read},
-  Grok: {API},
-  Repo: {Read, Comment, Approve}
-}
-
-// Multi-LLM orchestration with capability security
-fn build_feature(
-  spec: FeatureSpec,
-  using cap: {Claude.API, ChatGPT.API, Grok.API, GitHub, FileSystem}
-) & {Net, FS, GitHub, AI, Log} -> Result<PullRequest, Error> {
-  
-  log("=== Starting Feature Build: {} ===", spec.title, using time);
-  
-  // Phase 1: Design (Claude - read-only on code, can write designs)
-  log("Phase 1: Architecture design (Claude)", using time);
-  let design = spawn_agent::<Architect>(
-    caps: Architect,
-    model: "claude-sonnet-4",
-    prompt: "Design architecture for: {}
-Requirements: {}
-Constraints: {}",
-    context: spec
-  ).await?;
-  
-  log("Design complete: {} components, {} interfaces", 
-      len(design.components), len(design.interfaces), using time);
-  
-  // Phase 2: Implement (ChatGPT - can write code, commit)
-  log("Phase 2: Implementation (ChatGPT)", using time);
-  let implementation = spawn_agent::<Developer>(
-    caps: Developer,
-    model: "gpt-4",
-    prompt: "Implement based on design: {}
-Test coverage: 80%+ required
-Follow project style guide",
-    context: design
-  ).await?;
-  
-  log("Implementation complete: {} files changed, {} tests added",
-      len(implementation.changed_files), implementation.tests_added, using time);
-  
-  // Phase 3: Review (Grok - read-only, can comment)
-  log("Phase 3: Code review (Grok)", using time);
-  let review = spawn_agent::<Reviewer>(
-    caps: Reviewer,
-    model: "grok-2",
-    prompt: "Review implementation for:
-- Security issues
-- Performance problems
-- Test coverage
-- Code style violations",
-    context: implementation
-  ).await?;
-  
-  log("Review complete: {} issues found, severity: {}",
-      len(review.issues), review.max_severity, using time);
-  
-  // Phase 4: Create PR with all context
-  if review.max_severity == "blocker" {
-    return Err(Error::ReviewBlocked(review.issues));
-  }
-  
-  let pr = create_pull_request(
-    title: spec.title,
-    design: design,
-    implementation: implementation,
-    review: review,
-    using github
-  )?;
-  
-  log("Pull request created: {}", pr.url, using time);
-  Ok(pr)
+    Ok(pr_url)
 }
 ```
 
@@ -467,37 +339,43 @@ Follow project style guide",
 
 ```json
 {
-  "workflow": "build_feature",
-  "feature": "Add authentication middleware",
-  "start_time": "2026-02-01T10:00:00Z",
+  "program": "orchestrate_feature.strata",
+  "feature_request": "Add user authentication",
+  "started_at": "2026-08-15T14:00:00.000Z",
+  "finished_at": "2026-08-15T14:01:15.000Z",
+  "result": { "ok": "https://github.com/company/project/pull/42" },
+  "total_cost_usd": 0.15,
   "phases": [
     {
       "phase": "Architecture",
-      "agent": "Architect",
+      "agent": "architect_agent",
       "model": "claude-sonnet-4",
-      "timestamp": "2026-02-01T10:00:01Z",
+      "timestamp": "2026-08-15T14:00:01.000Z",
       "effects": [
         {
-          "effect": "FS.Read",
-          "paths": ["/src/auth/", "/docs/architecture.md"],
-          "bytes_read": 15420
+          "seq": 0,
+          "effect": "Fs",
+          "operation": "scan_directory",
+          "inputs": { "path": "/src" },
+          "outputs": { "files": 47, "bytes": 152000 }
         },
         {
-          "effect": "AI.Generate",
-          "model": "claude-sonnet-4",
-          "prompt_tokens": 3200,
-          "completion_tokens": 1850,
-          "cost_usd": 0.03,
-          "reasoning_trace": {
-            "approach": "Middleware pattern with JWT validation",
-            "components": ["AuthMiddleware", "TokenValidator", "UserContext"],
-            "justification": "Separates auth logic from business logic, testable in isolation"
+          "seq": 1,
+          "effect": "Ai",
+          "operation": "generate",
+          "inputs": {
+            "model": "claude-sonnet-4",
+            "prompt_tokens": 3500
+          },
+          "outputs": {
+            "completion_tokens": 1200,
+            "cost_usd": 0.04,
+            "reasoning": {
+              "approach": "JWT middleware pattern",
+              "components": ["AuthMiddleware", "TokenValidator"],
+              "justification": "Separates auth from business logic"
+            }
           }
-        },
-        {
-          "effect": "FS.Write",
-          "path": "/designs/auth-middleware.md",
-          "bytes": 4096
         }
       ],
       "duration_ms": 8500,
@@ -505,133 +383,195 @@ Follow project style guide",
     },
     {
       "phase": "Implementation",
-      "agent": "Developer",
+      "agent": "developer_agent",
       "model": "gpt-4",
-      "timestamp": "2026-02-01T10:00:10Z",
+      "timestamp": "2026-08-15T14:00:12.000Z",
       "effects": [
         {
-          "effect": "FS.Read",
-          "paths": ["/designs/auth-middleware.md", "/src/**/*.rs"],
-          "bytes_read": 52000
+          "seq": 2,
+          "effect": "Ai",
+          "operation": "generate_code",
+          "inputs": {
+            "model": "gpt-4",
+            "prompt_tokens": 5000
+          },
+          "outputs": {
+            "completion_tokens": 2500,
+            "cost_usd": 0.08,
+            "files_generated": 3
+          }
         },
         {
-          "effect": "AI.Generate",
-          "model": "gpt-4",
-          "prompt_tokens": 8500,
-          "completion_tokens": 3200,
-          "cost_usd": 0.08,
-          "generated_files": [
-            "/src/auth/middleware.rs",
-            "/src/auth/validator.rs",
-            "/tests/auth_tests.rs"
-          ]
+          "seq": 3,
+          "effect": "Fs",
+          "operation": "write_files",
+          "inputs": { "files": 3, "total_bytes": 8500 }
         },
         {
-          "effect": "FS.Write",
-          "files": 3,
-          "total_bytes": 12800
-        },
-        {
-          "effect": "Repo.Commit",
-          "sha": "abc123",
-          "message": "Add authentication middleware per design",
-          "files_changed": 3
+          "seq": 4,
+          "effect": "Git",
+          "operation": "commit",
+          "outputs": { "sha": "abc123", "message": "Implement feature per design" }
         }
       ],
-      "duration_ms": 22000,
+      "duration_ms": 25000,
       "result": "Success"
     },
     {
       "phase": "Review",
-      "agent": "Reviewer",
+      "agent": "reviewer_agent",
       "model": "grok-2",
-      "timestamp": "2026-02-01T10:00:35Z",
+      "timestamp": "2026-08-15T14:00:40.000Z",
       "effects": [
         {
-          "effect": "FS.Read",
-          "paths": ["/src/auth/**/*.rs", "/tests/auth_tests.rs"],
-          "bytes_read": 12800
+          "seq": 5,
+          "effect": "Fs",
+          "operation": "read_diff",
+          "inputs": { "commit": "abc123" },
+          "outputs": { "lines_changed": 250 }
         },
         {
-          "effect": "AI.Analyze",
-          "model": "grok-2",
-          "prompt_tokens": 4200,
-          "completion_tokens": 900,
-          "cost_usd": 0.02,
-          "findings": {
-            "security_issues": 0,
-            "performance_concerns": 1,
-            "style_violations": 2,
-            "test_coverage": "87%"
+          "seq": 6,
+          "effect": "Ai",
+          "operation": "review_code",
+          "inputs": {
+            "model": "grok-2",
+            "prompt_tokens": 3000
+          },
+          "outputs": {
+            "completion_tokens": 800,
+            "cost_usd": 0.03,
+            "findings": {
+              "security_issues": 0,
+              "test_coverage": "89%",
+              "suggestions": 2
+            }
           }
         },
         {
-          "effect": "Repo.Comment",
-          "location": "/src/auth/middleware.rs:42",
-          "text": "Consider caching token validation results for performance"
+          "seq": 7,
+          "effect": "GitHub",
+          "operation": "create_pr",
+          "inputs": {
+            "title": "Add user authentication",
+            "commit": "abc123"
+          },
+          "outputs": {
+            "pr_number": 42,
+            "url": "https://github.com/company/project/pull/42"
+          }
         }
       ],
-      "duration_ms": 12000,
-      "result": "Approved with suggestions"
-    },
-    {
-      "phase": "PR Creation",
-      "timestamp": "2026-02-01T10:00:50Z",
-      "effects": [
-        {
-          "effect": "GitHub.PullRequest",
-          "number": 42,
-          "url": "https://github.com/company/project/pull/42"
-        }
-      ],
-      "duration_ms": 1500
+      "duration_ms": 18000,
+      "result": "Success"
     }
   ],
-  "total_duration_ms": 44000,
-  "total_cost_usd": 0.13,
-  "result": "Success(PR #42)"
+  "duration_ms": 75000
 }
 ```
 
-### Demo Narrative
+### Demo Narrative (8 minutes)
 
-**Setup:**
-1. Explain the problem: "AI agents are powerful but opaque and potentially dangerous"
-2. Show traditional approach: Python scripts calling LLM APIs with no safety rails
-3. Demonstrate the risks: What if architect agent tries to commit code? What if developer agent tries to approve its own work?
+**Act 1: The Problem with Current AI Agents (2 minutes)**
 
-**Strata Solution:**
-1. Define three agent roles with explicit, minimal capabilities
-2. Show capability constraints in code:
-   - Architect CAN'T commit code (compile error if it tries)
-   - Developer CAN'T approve PRs (compile error if it tries)
-   - Reviewer CAN'T modify code (compile error if it tries)
-3. Run the workflow end-to-end
-4. Show the complete effect trace with:
+Show typical AI agent framework (LangChain, AutoGen):
+```python
+# agents.py - typical approach
+architect = Agent("claude-sonnet-4", tools=["read_file", "write_file", "git", "github"])
+developer = Agent("gpt-4", tools=["read_file", "write_file", "git", "github"])
+reviewer = Agent("grok-2", tools=["read_file", "write_file", "git", "github"])
+
+# What's wrong?
+# - All agents have ALL tools (no least privilege)
+# - Architect could accidentally commit code
+# - Developer could approve their own PR
+# - Reviewer could modify code they're reviewing
+# - No way to prevent these at compile time
+```
+
+**Act 2: Strata's Type-Safe Approach (3 minutes)**
+
+1. **Show agent definitions** with explicit, minimal capabilities
+2. **Demonstrate capability constraints:**
+   ```strata
+   fn architect_agent(
+       task: FeatureRequest,
+       using fs_read: FsReadCap,  // Read-only!
+       using ai: AiCap
+   ) -> Result<DesignDoc> & {Fs, Ai} {
+       // CAN'T write files - compile error if attempted
+   }
+   ```
+
+3. **Show affine types in action:**
+   ```strata
+   let pr_url = reviewer_agent(
+       commit_sha,
+       using fs_read,
+       using github,  // GitHubCap moved here
+       using ai
+   )?;
+   
+   // COMPILER ERROR if orchestrator tries:
+   // github_delete_repo(using github)?;
+   // ERROR: use of moved value 'github'
+   ```
+
+4. **Run the workflow** end-to-end (all 3 agents)
+
+**Act 3: The "Holy Grail" Moment (3 minutes)**
+
+1. **Attempt to break security:**
+   Try to make Architect commit code:
+   ```strata
+   fn architect_agent(
+       task: FeatureRequest,
+       using fs_read: FsReadCap,
+       using ai: AiCap
+   ) -> Result<DesignDoc> & {Fs, Ai} {
+       let design = ai_generate(...)?;
+       
+       // TRY TO COMMIT (should fail)
+       git_commit("Shortcut!", using git)?;  
+       // COMPILER ERROR: 'git' not in scope
+   ```
+   **Show compile error:** Type system prevents security violation
+
+2. **Show one-time token enforcement:**
+   Try to use GitHubCap twice:
+   ```strata
+   let pr = github_create_pr(title, using github)?;
+   
+   // TRY TO DELETE REPO (should fail)
+   github_delete_repo(using github)?;
+   // COMPILER ERROR: use of moved value 'github'
+   ```
+   **This is the "Affine Types Demo"** - prevents token reuse
+
+3. **Show complete effect trace:**
    - Every AI decision with reasoning
-   - Every file operation
-   - Cost tracking across all models
+   - Cost tracking ($0.15 across 3 models)
    - Time breakdown per phase
+   - Full audit trail
 
 **Wow Moments:**
 
 1. **"The compiler prevents agent security violations"**
-   - Try to make Architect commit code → Compile error
+   - Try to give Architect git access → Compile error
    - "This is type-safety for AI agents"
 
-2. **"You can see exactly what each agent did and why"**
-   - Show effect trace with reasoning traces
+2. **"One-time GitHub token enforced by type system"**
+   - After CreatePR, can't DeleteRepo
+   - "Holy Grail of 2026 AI Safety" (external reviewer)
+
+3. **"You can see exactly what each agent did and why"**
+   - Show effect trace with AI reasoning traces
    - "Not a black box - full transparency"
 
-3. **"Deterministic replay for debugging"**
+4. **"Deterministic replay for debugging multi-agent workflows"**
    - Simulate implementation failure
-   - Replay from Phase 2 to see exact state when it failed
+   - Replay from Phase 2 to see exact state
    - "Debug AI decisions like you debug code"
-
-4. **"Cost tracking built-in"**
-   - Show $0.13 total cost across 3 LLM providers
-   - Track token usage per agent
-   - "No surprise bills"
 
 5. **"Multi-vendor orchestration is natural"**
    - Claude for architecture (best at design)
@@ -641,88 +581,434 @@ Follow project style guide",
 
 ### Why This Demo Matters (2026 Context)
 
-**Current State of AI Agents (Feb 2026):**
+**Current State (Feb 2026):**
+- Industry terrified of "Agentic AI" doing destructive things
 - LangChain, AutoGen, CrewAI - popular but opaque
-- Agents frequently exceed their intended scope
-- Debugging requires reading logs and hoping
-- Cost overruns common (agents making expensive calls)
+- Agents frequently exceed intended scope
 - Security teams don't trust agent systems in production
 
 **Strata's Unique Value:**
-- ✅ **Transparent:** Every AI decision traced with reasoning
-- ✅ **Safe:** Capability constraints enforced at compile-time
-- ✅ **Debuggable:** Deterministic replay of multi-agent workflows
-- ✅ **Cost-controlled:** Token usage visible in effect traces
-- ✅ **Auditable:** Complete chain of custody for all agent actions
+> "Strata provides the 'Capability-Safe Sandbox for Agents' that the industry desperately needs. It's not just a better AI framework - it's a security primitive for the age of autonomous agents."
 
 **Market Position:**
 > "LangChain is for prototyping AI agents. Strata is for running them in production with confidence."
 
-### Meta-Narrative Power
+### Requirements for Demo
 
-**This demo is special because:**
-1. **It's self-referential:** "We used Strata to solve the exact problem Strata was designed for"
-2. **It's immediately useful:** People want this tool TODAY
-3. **It proves the thesis:** If Strata can orchestrate its own development, it can orchestrate anything
-4. **It's demo-able:** Can show it working in real-time
+**Language features:**
+- [x] Type checking with inference
+- [x] Functions
+- [x] Control flow
+- [x] ADTs
+- [x] Effect syntax
+- [ ] Capabilities (Issue 009)
+- [ ] Affine types (Issue 010) ← CRITICAL
+- [ ] Effect tracing runtime
+- [ ] Replay runner
 
-**Press/Community Angle:**
-> "Strata: The AI Agent Orchestrator Built With AI Agents"
-
-This is the kind of meta-narrative that gets attention and proves technical capability simultaneously.
+**Standard library:**
+- File I/O with read-only derivation
+- Git operations
+- GitHub API operations
+- AI model APIs (Claude, ChatGPT, Grok)
 
 ---
 
-## v0.1 Requirements to Support These Demos
+## Demo 3: Time-Travel Bug Hunting
 
-**Language features needed:**
-- [x] Type checking with inference (Issue 004)
-- [ ] Functions (Issue 005)
-- [ ] Basic control flow (Issue 006)
-- [ ] ADTs: `Result<T, E>`, `Option<T>`, structs (Issue 007)
-- [ ] Effect syntax: `& {FS, Net, ...}` (Issue 008)
-- [ ] Capabilities: `using cap: CapType` (Issue 009)
-- [ ] Effect tracing runtime (Phase 4)
-- [ ] Replay runner (Phase 4)
+**Use Case:** Debug production failures by replaying exact execution without network/filesystem access
 
-**Standard library needed:**
-- `Result<T, E>` and `Option<T>` types
-- String, Vec, basic collections
-- File I/O: `read_file`, `write_file`
+**Target Pain Points:**
+- "It works on my machine" - can't reproduce production failures
+- Flaky tests caused by network variability
+- Debugging requires re-running effects (slow, expensive, risky)
+- Integration tests that hit real APIs (flaky, slow)
+
+**What This Demo Proves:**
+✅ Effect-purity enables deterministic replay  
+✅ Heisenbug → Bohrbug transformation  
+✅ Debug production failures locally without risk  
+✅ Replay is a development tool, not just debugging
+
+### Code Example
+
+```strata
+// Script that calls flaky external API
+fn fetch_and_process(
+    url: Url,
+    using net: NetCap,
+    using fs: FsCap
+) -> Result<ProcessedData> & {Net, Fs} {
+    // Step 1: Fetch data from API (sometimes fails)
+    let response = http_get(url, using net)?;
+    
+    // Step 2: Process data
+    let parsed = parse_json(response.body)?;
+    let validated = validate_schema(parsed)?;
+    
+    // Step 3: Save to cache
+    write_file("/cache/data.json", validated, using fs)?;
+    
+    // Step 4: Transform
+    let transformed = transform(validated)?;
+    
+    Ok(transformed)
+}
+```
+
+### Scenario: Production Failure
+
+**Production run (3 AM):**
+```bash
+$ strata run fetch.strata --trace production-failure.json
+ERROR: ParseError at line 23: Unexpected token ';' in JSON
+```
+
+**Trace captured:**
+```json
+{
+  "program": "fetch.strata",
+  "started_at": "2026-08-15T03:00:00.000Z",
+  "failed_at": "2026-08-15T03:00:01.250Z",
+  "result": { "err": "ParseError: Unexpected token ';'" },
+  "effects": [
+    {
+      "seq": 0,
+      "effect": "Net",
+      "operation": "get",
+      "inputs": { "url": "https://api.partner.com/data" },
+      "outputs": {
+        "status": 200,
+        "body": "{\"items\": [1, 2, 3]; \"extra\": true}"  // <- Malformed JSON!
+      }
+    }
+  ]
+}
+```
+
+### Demo Narrative (5 minutes)
+
+**Act 1: The Flaky Failure (1 minute)**
+
+Show production failure at 3 AM:
+- Script fails with ParseError
+- API returned malformed JSON (rare edge case)
+- Can't reproduce locally (API fixed the bug)
+- No way to debug without re-running production script
+
+**Act 2: Replay to the Rescue (2 minutes)**
+
+```bash
+# Next morning, debug locally with NO network access
+$ strata replay production-failure.json
+
+# Replay mode:
+# - http_get() returns recorded response from trace
+# - No actual network call made
+# - Script executes deterministically
+# - Fails at exact same line with exact same error
+
+Replaying production-failure.json...
+Effect[0]: Net.get → (from trace)
+ERROR: ParseError at line 23: Unexpected token ';' in JSON
+```
+
+**Now you can:**
+1. Inspect the malformed JSON in the trace
+2. Add logging to see what parser was doing
+3. Fix the bug (add error handling for malformed JSON)
+4. Re-run replay to verify fix
+5. Deploy fixed version with confidence
+
+**Act 3: The Meta Power (2 minutes)**
+
+**Replay isn't just for debugging - it's a development tool:**
+
+```bash
+# Write test against real API
+$ strata run integration-test.strata --trace golden.json
+All tests passed!
+
+# Now replay becomes your integration test
+$ strata replay golden.json
+# Runs in milliseconds, no network calls, deterministic
+```
+
+**Wow Moments:**
+
+1. **"Heisenbug → Bohrbug"**
+   - Flaky network issue becomes reproducible bug
+   - Effect-purity enables time-travel debugging
+
+2. **"Debug production failures without touching production"**
+   - Replay trace locally
+   - Zero risk of making things worse
+
+3. **"Integration tests that actually work"**
+   - Capture real API responses once
+   - Replay as deterministic unit tests
+   - Fast, reliable, no API rate limits
+
+4. **"Effect traces are executable"**
+   - Not just logs - they're replays
+   - This is the power of effect-purity
+
+### Requirements for Demo
+
+**Language features:**
+- [x] All previous features
+- [ ] Effect tracing runtime ← CRITICAL
+- [ ] Replay runner ← CRITICAL
+
+**Standard library:**
+- HTTP client
+- JSON parsing
+- File I/O
+
+---
+
+# PART 2: v0.2 Expansion Demos (Documented Now, Built Later)
+
+These demos show Strata's versatility across different domains. They're documented now to show vision and breadth, but will be built after v0.1 proves core value.
+
+---
+
+## Demo 4: Privacy-Preserving Data Pipeline
+
+**Use Case:** Handle PII with compile-time data sovereignty guarantees
+
+**Target Audience:** Data Engineers, Compliance Officers, Healthcare/Finance companies
+
+**Target Pain Points:**
+- Easy to accidentally log PII (emails, SSNs) in debugging
+- Hard to ensure data never leaves sanitized state
+- Compliance violations from casual mistakes
+- No compile-time guarantees about data flow
+
+**What This Demo Proves:**
+✅ PII effect type prevents leakage  
+✅ Data must go through scrubber before logging  
+✅ Type system acts as DLP engine  
+✅ Compliance by construction
+
+### Code Example
+
+```strata
+// Define PII effect separate from Safe effect
+effect Pii;   // Handling cleartext PII
+effect Safe;  // Handling sanitized data
+
+fn process_user_data(
+    data: UserRecord,
+    using pii: PiiCap,
+    using log: LogCap
+) -> Result<(), Error> & {Pii, Log} {
+    
+    // Raw email has Pii effect
+    let raw_email = data.email;  // Type: String & {Pii}
+    
+    // COMPILER ERROR if you try:
+    // log("Processing: {}", raw_email, using log)?;
+    // ERROR: Cannot use {Pii} data in {Log} operation
+    
+    // Must scrub first
+    let clean_email = scrub_pii(raw_email, using pii); // {Pii} → {Safe}
+    
+    // NOW can log (Safe data allowed in Log operations)
+    log("Processing user: {}", clean_email, using log)?;  // OK
+    
+    // Similarly, can't send raw PII over network
+    // http_post(url, raw_email, using net)?;  // ERROR
+    
+    // Must scrub first
+    let sanitized = scrub_for_analytics(data, using pii);
+    http_post(analytics_url, sanitized, using net)?;  // OK
+    
+    Ok(())
+}
+```
+
+### Demo Narrative
+
+**The Wow Moment:**
+Show compile error when trying to log PII:
+```
+ERROR: Effect mismatch
+  --> process.strata:12:10
+   |
+12 |     log("Email: {}", raw_email, using log)?;
+   |              ^^^^^^^^^ value has effect {Pii}
+   |
+   = note: 'log' requires effect {Safe}
+   = help: Use scrub_pii() to convert {Pii} → {Safe}
+```
+
+**The Value:**
+> "The compiler is a Data Loss Prevention engine. You literally cannot log PII without explicitly scrubbing it first. This is compliance by construction."
+
+**Why v0.2:** Requires finer-grained effect types (Pii as separate effect) and effect transformations (scrubbers that change effect labels).
+
+---
+
+## Demo 5: Blast Radius Controller (Capability Attenuation)
+
+**Use Case:** Dynamic authority slicing for least-privilege enforcement
+
+**Target Audience:** Cloud Platform Engineers, SREs, Security Architects
+
+**Target Pain Points:**
+- Scripts get AWS_ADMIN keys even when they only need to reboot one instance
+- "All-or-nothing" credentials
+- Hard to enforce least privilege programmatically
+- Risk of over-privileged automation
+
+**What This Demo Proves:**
+✅ Capability slicing (fat cap → thin cap)  
+✅ Affine nature prevents using high-privilege version after slicing  
+✅ Least privilege enforced by type system  
+✅ Dynamic authority attenuation
+
+### Code Example
+
+```strata
+fn cleanup_temp_disks(
+    using aws: AwsCap  // Full AWS access (dangerous!)
+) -> Result<(), Error> & {Aws} {
+    
+    // Slice the capability - create restricted version
+    let restricted_aws = aws
+        .limit_to_region("us-east-1")
+        .limit_to_service("EC2")
+        .read_only();  // Type: AwsCap<Region=USEast1, Service=EC2, ReadOnly>
+    
+    // Original 'aws' is CONSUMED (affine types!)
+    // Can't accidentally use high-privilege version later
+    
+    // This sub-function CAN'T delete database in us-west-2
+    run_cleanup_logic(using restricted_aws)?;
+    
+    // COMPILER ERROR if you try:
+    // delete_database("us-west-2", using aws)?;
+    // ERROR: use of moved value 'aws'
+    
+    Ok(())
+}
+```
+
+### Demo Narrative
+
+**The Wow Moment:**
+
+Try to use full AWS cap after slicing:
+```strata
+let restricted = aws.limit_to_region("us-east-1");
+
+// TRY TO DELETE PRODUCTION DATABASE (should fail)
+delete_db("prod-db-us-west-2", using aws)?;
+// COMPILER ERROR: use of moved value 'aws'
+```
+
+**The Value:**
+> "When you slice a capability, the original is consumed. You can't accidentally use the high-privilege version later. This is least privilege, enforced by the type system."
+
+**Why v0.2:** Requires **Issue 010.5 (Capability Attenuation)** - new scope for capability type operations. Estimated 5-7 days, Phase 3.
+
+---
+
+## Demo 6: AI Incident Response Workflow
+
+**Use Case:** Automated incident response with traceable AI decision-making
+
+**Target Audience:** SRE teams, Security Operations, DevOps
+
+**Why deferred to v0.2:**
+- Complex scenario requires extensive faking/mocking
+- Needs polished multi-step workflow presentation
+- v0.1 focus is proving core capabilities
+- Can build on Demo 2 (Meta-Agent) patterns
+
+**What it would show:**
+- AI analyzing service logs
+- Generating remediation steps
+- Auto-executing safe actions (with approval gates)
+- Full audit trail of incident response
+
+**Timeline:** Build after v0.1 proves market fit with simpler demos.
+
+---
+
+# Requirements Summary
+
+## v0.1 Core Demos Requirements
+
+**Language Features:**
+- [x] Type checking with inference (Issues 001-005)
+- [x] Functions with polymorphism (Issue 005)
+- [x] Control flow (Issue 006)
+- [x] ADTs with generics (Issue 007)
+- [x] Effect system (Issue 008)
+- [ ] Capability types (Issue 009) ← NEXT
+- [ ] Affine types (Issue 010) ← CRITICAL for Demo 2
+- [ ] WASM runtime (Issue 011)
+- [ ] Effect tracing (Issue 011)
+- [ ] Replay runner (Issue 011)
+
+**Standard Library (Minimal):**
+- `Result<T, E>`, `Option<T>`
+- File I/O: `read_file`, `write_file`, `scan_directory`
 - HTTP: `http_get`, `http_post`
-- AI: `ai_analyze`, `ai_generate_steps` (wrapper around OpenAI/Anthropic APIs)
-- Time: `now()`, `log()`
-- Utilities: `hash()`, `len()`, `format()`
+- Git: `git_commit`
+- GitHub: `github_create_pr`
+- AI: `ai_generate`, `ai_generate_code`, `ai_review_code`
+- Time: `log()`, `now()`
+- Utilities: `hash()`, `len()`, `parse_json()`
 
-**Tooling needed:**
-- CLI that runs programs
-- Effect trace JSON output
-- Replay runner that can replay from trace
+**Tooling:**
+- CLI: `strata run <file> --trace <output>`
+- CLI: `strata replay <trace>`
+- Effect trace JSON format
 - Clear error messages
 
----
+## v0.2 Expansion Demos Requirements
 
-## Timeline for Demo Readiness
-
-**Demo 1 (Deployment):**
-- Requires: Issues 005-009 + minimal stdlib
-- Estimate: Month 8-9 (after effect system complete)
-
-**Demo 2 (AI Incident Response):**
-- Requires: Same as Demo 1 + AI capability wrapper
-- Estimate: Month 9-10 (polish on top of Demo 1)
-
-**Both demos polished for v0.1 launch:**
-- Month 10-12 (hardening phase)
+**Additional Features:**
+- Issue 010.5: Capability Attenuation (NEW - 5-7 days)
+- Finer-grained effect types (Pii effect)
+- Effect transformations (scrubbers)
+- More sophisticated capability operations
 
 ---
 
-## Post-Demo Evolution (v0.2+)
+# Timeline
 
-**Potential enhancements:**
-- Add actors: Show multi-agent incident response
-- Add row polymorphism: Generic workflow steps
-- Add async: Show concurrent remediation steps
-- Add logic engine: Show proof traces for AI reasoning
+**v0.1 Demo Readiness:**
+- Demo 1 (Deployment + Replay): Month 10 (all features complete)
+- Demo 2 (Meta-Agent + Affine): Month 10 (Issue 010 is critical)
+- Demo 3 (Time-Travel): Month 10 (replay infrastructure)
+- **All three polished:** Month 11-12 (v0.1 launch window)
 
-But for v0.1, the demos above are **sufficient to prove the value proposition**.
+**v0.2 Expansion:**
+- Demo 4 (PII Pipeline): Month 18-20
+- Demo 5 (Blast Radius): Month 18-20 (after Issue 010.5)
+- Demo 6 (Incident Response): Month 20-22
+
+---
+
+# Success Metrics
+
+**v0.1 Launch:**
+- All 3 core demos working
+- Can present each in <8 minutes
+- Clear "wow moments" identified
+- Can run live without failures
+
+**Post-Launch:**
+- User recreates Demo 1 for their deployment
+- Someone asks "Can I use this for my AI agents?"
+- Conference talk accepted based on demos
+- First "I rewrote my script in Strata" blog post
+
+**v0.2 Validation:**
+- Demo 4-6 working
+- Shows breadth (AI ops, data privacy, cloud security)
+- Someone builds use case we didn't anticipate

@@ -1278,7 +1278,7 @@ fn path_to_string(path: &Path) -> String {
 fn substitute_type_vars(ty: &Ty, subst: &HashMap<TypeVarId, Ty>) -> Ty {
     match ty {
         Ty::Var(v) => subst.get(v).cloned().unwrap_or_else(|| ty.clone()),
-        Ty::Const(_) | Ty::Never => ty.clone(),
+        Ty::Const(_) | Ty::Never | Ty::Cap(_) => ty.clone(),
         Ty::Arrow(params, ret, eff) => Ty::arrow_eff(
             params
                 .iter()
@@ -1301,6 +1301,7 @@ fn substitute_type_vars(ty: &Ty, subst: &HashMap<TypeVarId, Ty>) -> Ty {
 
 /// Convert a TypeExpr from the AST to an inference type
 fn ty_from_type_expr(te: &strata_ast::ast::TypeExpr) -> Result<Ty, InferError> {
+    use crate::effects::CapKind;
     use strata_ast::ast::TypeExpr;
     match te {
         TypeExpr::Path(path, span) => {
@@ -1311,10 +1312,16 @@ fn ty_from_type_expr(te: &strata_ast::ast::TypeExpr) -> Result<Ty, InferError> {
                 "Int" => Ok(Ty::int()),
                 "Float" => Ok(Ty::float()),
                 "String" => Ok(Ty::string()),
-                _ => Err(InferError::NotImplemented {
-                    msg: format!("Unknown type: {}", name),
-                    span: *span,
-                }),
+                _ => {
+                    // Check for capability types
+                    if let Some(kind) = CapKind::from_name(name) {
+                        return Ok(Ty::Cap(kind));
+                    }
+                    Err(InferError::NotImplemented {
+                        msg: format!("Unknown type: {}", name),
+                        span: *span,
+                    })
+                }
             }
         }
         TypeExpr::Arrow { params, ret, .. } => {

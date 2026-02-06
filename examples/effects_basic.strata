@@ -2,28 +2,29 @@
 //
 // Effects track what side effects a function may perform.
 // Strata enforces these at compile time.
+// Capabilities gate effect usage — extern fns must have matching cap params.
 
-// Extern functions declare their effects
-extern fn read_file(path: String) -> String & {Fs};
-extern fn write_file(path: String, data: String) -> () & {Fs};
-extern fn fetch(url: String) -> String & {Net};
+// Extern functions declare their effects and require matching capabilities
+extern fn read_file(path: String, fs: FsCap) -> String & {Fs};
+extern fn write_file(path: String, data: String, fs: FsCap) -> () & {Fs};
+extern fn fetch(url: String, net: NetCap) -> String & {Net};
 
 // Pure functions have no effects (& {} or no annotation)
 fn add(x: Int, y: Int) -> Int & {} { x + y }
 
 // Functions that call effectful functions must declare those effects
-fn copy_file(src: String, dst: String) -> () & {Fs} {
-    let data = read_file(src);
-    write_file(dst, data)
+fn copy_file(fs: FsCap, src: String, dst: String) -> () & {Fs} {
+    let data = read_file(src, fs);
+    write_file(dst, data, fs)
 }
 
 // Multiple effects accumulate
-fn download_and_save(url: String, path: String) -> () & {Fs, Net} {
-    let data = fetch(url);
-    write_file(path, data)
+fn download_and_save(fs: FsCap, net: NetCap, url: String, path: String) -> () & {Fs, Net} {
+    let data = fetch(url, net);
+    write_file(path, data, fs)
 }
 
 // Unannotated functions infer their effects
-fn load(path: String) -> String {
-    read_file(path)
+fn load(fs: FsCap, path: String) -> String {
+    read_file(path, fs)
 }

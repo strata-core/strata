@@ -5,7 +5,7 @@ use super::adt::{
     contains_capability, find_capability_name, AdtDef, AdtRegistry, FieldDef, VariantDef,
     VariantFields,
 };
-use super::effects::{Effect, EffectRow};
+use super::effects::{CapKind, Effect, EffectRow};
 use super::infer::ty::{free_effect_vars_env, Scheme, Ty, TypeVarId};
 use super::infer::{InferCtx, Solver};
 use std::collections::HashMap;
@@ -109,6 +109,22 @@ pub enum TypeError {
         actual: crate::effects::EffectRow,
         span: Span,
     },
+    /// Function performs effect but lacks the required capability parameter
+    MissingCapability {
+        effect: String,
+        cap_type: String,
+        fn_name: String,
+        span: Span,
+    },
+    /// Extern function declares effect without matching capability parameter
+    ExternMissingCapability {
+        effect: String,
+        cap_type: String,
+        fn_name: String,
+        span: Span,
+    },
+    /// ADT name shadows a built-in capability type
+    ReservedCapabilityName { name: String, span: Span },
 }
 
 impl std::fmt::Display for TypeError {
@@ -170,7 +186,19 @@ impl std::fmt::Display for TypeError {
                 write!(f, "Duplicate type definition '{}' at {:?}", name, span)
             }
             TypeError::UnknownType { name, span } => {
-                write!(f, "Unknown type '{}' at {:?}", name, span)
+                write!(f, "Unknown type '{}' at {:?}", name, span)?;
+                // Ergonomic hint: user may have written an effect name where a cap type goes
+                match name.as_str() {
+                    "Fs" | "Net" | "Time" | "Rand" | "Ai" => {
+                        write!(
+                            f,
+                            ". Did you mean {}Cap? Effects like {} go in & {{...}}, capability types are parameter types",
+                            name, name
+                        )?;
+                    }
+                    _ => {}
+                }
+                Ok(())
             }
             TypeError::UnknownVariant {
                 type_name,
@@ -311,7 +339,24 @@ impl std::fmt::Display for TypeError {
                     f,
                     "Unknown effect '{}' at {:?}; known effects are Fs, Net, Time, Rand, Ai",
                     name, span
-                )
+                )?;
+                // Ergonomic hint: user may have written FsCap in an effect annotation
+                if name.ends_with("Cap") {
+                    if let Some(effect_name) = name.strip_suffix("Cap") {
+                        let normalized = match effect_name {
+                            "Fs" | "Net" | "Time" | "Rand" | "Ai" => Some(effect_name),
+                            _ => None,
+                        };
+                        if let Some(eff) = normalized {
+                            write!(
+                                f,
+                                ". Did you mean {{{}}}? Capability types like {} go in parameter types, not effect annotations",
+                                eff, name
+                            )?;
+                        }
+                    }
+                }
+                Ok(())
             }
             TypeError::MissingExternEffects { fn_name, span } => {
                 write!(
@@ -332,6 +377,52 @@ impl std::fmt::Display for TypeError {
                     f,
                     "Function '{}' uses {} but only declares {}; add {} to the effect annotation at {:?}",
                     fn_name, actual, declared, effect, span
+                )
+            }
+            TypeError::MissingCapability {
+                effect,
+                cap_type,
+                fn_name,
+                span,
+            } => {
+                write!(
+                    f,
+                    "Function '{}' requires capability {} because its effect row includes {{{}}} at {:?}. \
+                     Add a `{}: {}` parameter to this function.",
+                    fn_name,
+                    cap_type,
+                    effect,
+                    span,
+                    cap_type.to_lowercase().replace("cap", ""),
+                    cap_type
+                )
+            }
+            TypeError::ExternMissingCapability {
+                effect,
+                cap_type,
+                fn_name,
+                span,
+            } => {
+                write!(
+                    f,
+                    "Extern function '{}' declares {{{}}} effect but lacks the required '{}' capability parameter at {:?}. \
+                     Add a `{}: {}` parameter. Alternatively, remove {{{}}} from the effect annotation if this extern is actually pure.",
+                    fn_name,
+                    effect,
+                    cap_type,
+                    span,
+                    cap_type.to_lowercase().replace("cap", ""),
+                    cap_type,
+                    effect
+                )
+            }
+            TypeError::ReservedCapabilityName { name, span } => {
+                write!(
+                    f,
+                    "Type name '{}' is reserved for the built-in {} capability type at {:?}",
+                    name,
+                    name.to_lowercase().replace("cap", " ").trim(),
+                    span
                 )
             }
         }
@@ -446,6 +537,27 @@ impl TypeChecker {
                 Item::ExternFn(decl) => {
                     // Register extern fn with its type signature (no body to check)
                     let fn_ty = self.extract_extern_fn_signature(decl)?;
+
+                    // Validate: extern fn must have capability parameters matching
+                    // all its declared concrete effects. No exceptions.
+                    if let Ty::Arrow(ref params, _, ref eff) = fn_ty {
+                        let param_caps: Vec<CapKind> = params
+                            .iter()
+                            .filter_map(|ty| match ty {
+                                Ty::Cap(kind) => Some(*kind),
+                                _ => None,
+                            })
+                            .collect();
+
+                        validate_caps_against_effects(
+                            &decl.name.text,
+                            &param_caps,
+                            eff,
+                            decl.span,
+                            true,
+                        )?;
+                    }
+
                     let fn_scheme = Scheme::mono(fn_ty);
                     self.env.insert(decl.name.text.clone(), fn_scheme);
                 }
@@ -631,6 +743,33 @@ impl TypeChecker {
             .apply(&predeclared_ty)
             .map_err(|e| subst_error_to_type_error(e, decl.span))?;
 
+        // ---- Capability validation ----
+        // After solving, check that the function has capability parameters for each
+        // concrete effect in its resolved effect row. Every function with concrete
+        // effects must have matching capabilities — no exceptions.
+        if let Ty::Arrow(ref resolved_params, _, ref resolved_eff) = final_fn_ty {
+            let param_caps: Vec<CapKind> = resolved_params
+                .iter()
+                .filter_map(|ty| match ty {
+                    Ty::Cap(kind) => Some(*kind),
+                    _ => None,
+                })
+                .collect();
+
+            // Resolve the effect row through the substitution
+            let resolved_eff = subst
+                .apply_effect_row(resolved_eff)
+                .map_err(|e| subst_error_to_type_error(e, decl.span))?;
+
+            validate_caps_against_effects(
+                &decl.name.text,
+                &param_caps,
+                &resolved_eff,
+                decl.name.span,
+                false,
+            )?;
+        }
+
         // NOW generalize: compute env vars excluding this function's own type vars
         // (since this function is still monomorphic in env, its vars are included in env_vars,
         // but we want to generalize those vars if they're not constrained by the environment)
@@ -753,6 +892,14 @@ impl TypeChecker {
     /// - All field types are valid
     /// - No capabilities stored in fields (until linear types)
     fn register_struct(&mut self, def: &StructDef) -> Result<(), TypeError> {
+        // Check for reserved capability type names
+        if CapKind::from_name(&def.name.text).is_some() {
+            return Err(TypeError::ReservedCapabilityName {
+                name: def.name.text.clone(),
+                span: def.span,
+            });
+        }
+
         // Check for duplicate type definition
         if self.adt_registry.contains(&def.name.text) {
             return Err(TypeError::DuplicateType {
@@ -810,6 +957,14 @@ impl TypeChecker {
     /// - No capabilities stored in variant payloads (until linear types)
     fn register_enum(&mut self, def: &EnumDef) -> Result<(), TypeError> {
         use strata_ast::ast::VariantFields as AstVariantFields;
+
+        // Check for reserved capability type names
+        if CapKind::from_name(&def.name.text).is_some() {
+            return Err(TypeError::ReservedCapabilityName {
+                name: def.name.text.clone(),
+                span: def.span,
+            });
+        }
 
         // Check for duplicate type definition
         if self.adt_registry.contains(&def.name.text) {
@@ -950,7 +1105,7 @@ impl TypeChecker {
 fn remap_type_vars(ty: &Ty, remap: &std::collections::HashMap<TypeVarId, Ty>) -> Ty {
     match ty {
         Ty::Var(v) => remap.get(v).cloned().unwrap_or_else(|| ty.clone()),
-        Ty::Const(_) | Ty::Never => ty.clone(),
+        Ty::Const(_) | Ty::Never | Ty::Cap(_) => ty.clone(),
         Ty::Arrow(params, ret, eff) => Ty::arrow_eff(
             params.iter().map(|t| remap_type_vars(t, remap)).collect(),
             remap_type_vars(ret, remap),
@@ -998,9 +1153,9 @@ impl TypeChecker {
                         return Ok(Ty::Var(var_id));
                     }
 
-                    // Check for capability types (these are valid types, but can't be stored in ADTs)
-                    if super::adt::is_capability_type(name) {
-                        return Ok(Ty::adt0(name));
+                    // Check for capability types (first-class in the type system)
+                    if let Some(kind) = CapKind::from_name(name) {
+                        return Ok(Ty::Cap(kind));
                     }
 
                     // Check for user-defined ADT (no type args)
@@ -1241,6 +1396,43 @@ fn unifier_error_to_type_error(err: super::infer::unifier::TypeError, span: Span
             TypeError::EffectChainTooDeep { depth, span }
         }
     }
+}
+
+/// Validate that a function's capability parameters cover all concrete effects.
+///
+/// For each concrete effect in the effect row, checks that a matching capability
+/// type is present in the parameter list. Open tail variables (representing
+/// parametric effects from higher-order calls) are NOT checked.
+///
+/// Used by both `check_fn` and extern validation to prevent drift.
+fn validate_caps_against_effects(
+    fn_name: &str,
+    param_caps: &[CapKind],
+    effect_row: &EffectRow,
+    span: Span,
+    is_extern: bool,
+) -> Result<(), TypeError> {
+    for effect in effect_row.iter() {
+        let required_cap = CapKind::from_effect(effect);
+        if !param_caps.contains(&required_cap) {
+            if is_extern {
+                return Err(TypeError::ExternMissingCapability {
+                    effect: format!("{:?}", effect),
+                    cap_type: required_cap.type_name().to_string(),
+                    fn_name: fn_name.to_string(),
+                    span,
+                });
+            } else {
+                return Err(TypeError::MissingCapability {
+                    effect: format!("{:?}", effect),
+                    cap_type: required_cap.type_name().to_string(),
+                    fn_name: fn_name.to_string(),
+                    span,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Convert a SubstError to a checker TypeError with a span

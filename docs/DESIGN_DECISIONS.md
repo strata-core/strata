@@ -294,6 +294,30 @@ add: (Int, Int) -> Int
 
 ---
 
+### Capability Types Gate Effects (Issue 009)
+
+**Decision:** Each effect has a corresponding capability type. A function that performs concrete effects must have the matching capability type(s) in its parameter list.
+
+**Mapping:**
+- `FsCap` gates `{Fs}` effects
+- `NetCap` gates `{Net}` effects
+- `TimeCap` gates `{Time}` effects
+- `RandCap` gates `{Rand}` effects
+- `AiCap` gates `{Ai}` effects
+
+**Design choices:**
+- **`Ty::Cap(CapKind)` is a first-class leaf type**, not an ADT. This prevents capabilities from being confused with user-defined types.
+- **Validation is a separate pass** after effect inference. The effect solver remains clean; capability checking is additive.
+- **Only concrete effects are checked.** Open tail variables (from higher-order function callbacks) don't require capabilities at the function level.
+- **Unused capabilities are not errors.** Functions may accept capabilities to pass downstream (pass-through pattern).
+- **Capability check activates when a function has at least one Cap-typed parameter.** Pre-capability code (without any Cap params) continues to work.
+
+**Known limitation:** Capability provisioning (how `main` gets capabilities from the runtime) is deferred to Issue 011 (WASM Runtime).
+
+**Status:** Implemented in Issue 009 (`strata-types/src/effects.rs`, `strata-types/src/checker.rs`)
+
+---
+
 ### Effects Are Grouped, Not Granular (MVP)
 
 **Decision:** MVP uses coarse-grained effects.
@@ -652,6 +676,14 @@ fn map<T, U, E>(f: fn(T) -> U & E, xs: [T]) -> [U] & E
 ```
 
 **Status:** Not in Issue 004-007, probably Issue 008+
+
+---
+
+## Known Limitations
+
+### Arrow Type Effect Annotations Silently Dropped
+
+Effect annotations on arrow types in type expressions (e.g., `fn(Int) -> Int & {Fs}` in an ADT field or type annotation) are parsed but silently dropped by the type checker, defaulting the slot to pure — this is sound (rejects effectful functions, conservative default) but is a UX trap that should be addressed in a future issue.
 
 ---
 

@@ -1,7 +1,7 @@
 # Strata Roadmap
 
-**Last Updated:** February 5, 2026
-**Current Version:** v0.0.8
+**Last Updated:** February 7, 2026
+**Current Version:** v0.0.9
 **Target v0.1:** November 2026 - February 2027 (10-14 months from project start)
 
 This document describes the planned roadmap for Strata, organized by development phases. It reflects strategic decisions made in January 2026 to focus on a **minimal, shippable v0.1** that proves core value propositions.
@@ -11,8 +11,8 @@ This document describes the planned roadmap for Strata, organized by development
 ## Quick Navigation
 
 - [Strategic Focus](#strategic-focus-for-v01)
-- [Phase 2: Type System](#phase-2-type-system-foundations-mostly-complete) (Mostly Complete ✅)
-- [Phase 3: Effect System](#phase-3-effect-system-your-differentiator) (Next)
+- [Phase 2: Type System](#phase-2-type-system-foundations-complete-) (Complete ✅)
+- [Phase 3: Effect System](#phase-3-effect-system-your-differentiator) (Current - Critical)
 - [Phase 4: Runtime](#phase-4-minimal-viable-runtime)
 - [Phase 5: Hardening & Launch](#phase-5-hardening--launch)
 - [Deferred Features](#explicitly-deferred-to-v02)
@@ -32,8 +32,9 @@ This document describes the planned roadmap for Strata, organized by development
 4. Explainability (full audit trail of all effects)
 
 **Killer Demos:** See [`KILLER_DEMOS.md`](KILLER_DEMOS.md)
-1. Safe model deployment script
-2. AI-powered incident response workflow
+1. Model Deployment with Deterministic Replay
+2. Meta-Agent Orchestration with Affine Types (AI safety)
+3. Time-Travel Bug Hunting (tooling demo)
 
 **v0.1 Success Metric:** An automation engineer can write a production deployment script in Strata that is safer, more auditable, and easier to debug than Python/Bash equivalents.
 
@@ -41,7 +42,48 @@ This document describes the planned roadmap for Strata, organized by development
 
 ## Important Notes
 
+### Critical Path to v0.1: The Next 3 Months
+
+**External validation from PL researcher (Feb 2026):**
+
+> "Strata will live or die by its rigor. If you start adding 'ergonomic shortcuts' that create soundness holes, Strata becomes just another scripting language with a confusing type system."
+
+**The Three Milestones:**
+
+**1. Issue 009 (Capability Types):** Kill the escape hatch ✅ DONE
+- Total capability coverage check — mandatory, no conditional bypass
+- Effect {X} requires XCap in scope — enforced for all functions and externs
+- No ambient authority enforced — zero-cap skip eliminated
+- **Status:** COMPLETE (Feb 6-7, 2026) — externally validated by 3 independent sources
+
+**2. Issue 010 (Affine Types):** "The Final Boss"
+- Prevent capability duplication and leaking
+- Use-at-most-once semantics without Rust-level complexity
+- **Critical quote:** "If you can implement Affine Types without making the language feel like Rust, you will have achieved something truly unique."
+- **Status:** After Issue 009 (2-3 weeks)
+
+**3. Issue 011 (WASM Runtime + Traces):** Prove the value
+- Formalize main() definition (caps injected by runtime)
+- Effect traces for debugging
+- Deterministic replay working
+- Killer demos functioning
+- **Status:** After Issue 010 (3-4 weeks)
+
+**If these 3 issues succeed: Technical confidence → 90%+**
+
+### Design Philosophy: Rigor Over Ergonomics
+
+**Core principle (external validation):**
+> "If an automation engineer has to type `using fs: FsCap` to delete a file, don't apologize for it. That explicitness is exactly why the world needs Strata."
+
+**The lesson from "Zero-Cap Skip" incident:**
+Attempted "ergonomic shortcut" (bypass for functions without capabilities) fundamentally broke the security proof. It was caught, scrutinized, and fixed. This is the right approach - **never compromise safety for convenience**.
+
+**Positioning:**
+Strata is a **security primitive**, not just a better scripting language. The secure way must be the easy way (zero-tax safety), but "easy" means "obvious and explicit," not "hidden and implicit."
+
 ### Timeline Reconciliation
+
 External feedback suggests Phase 2-3 (type system + effects) is achievable in 3-6 months. Our 10-14 month timeline includes Phase 4-5 (runtime, stdlib, tooling, docs, killer demos) which represents the additional effort to ship a production-ready v0.1.
 
 ### Standard Library Phasing
@@ -52,9 +94,11 @@ External feedback suggests Phase 2-3 (type system + effects) is achievable in 3-
 This sequencing ensures the effect system is complete before we add effectful operations to the standard library.
 
 ### Current Evaluator Status
+
 The evaluator (`eval.rs`) is a temporary smoke-test tool for validating type checker output. It has known limitations (no closures yet, no real I/O, limited error handling). This is intentional - it will be replaced by WASM compilation in Phase 4.
 
 ### Performance Philosophy
+
 Performance optimization is explicitly **deferred to v0.2+**. v0.1 prioritizes correctness, safety, and usability over speed.
 
 **Why performance is not a v0.1 concern:**
@@ -67,7 +111,8 @@ Performance optimization is explicitly **deferred to v0.2+**. v0.1 prioritizes c
 
 **When to optimize:** After v0.1 ships, after profiling real-world usage, if users report performance issues.
 
-### Design Philosophy
+### Balancing Five Concerns
+
 Strata balances five equally important concerns: type soundness, operational reality, human factors, security, and maintainability. This "anti-single-axis" approach means features are judged by their worst-case behavior, not best-case elegance.
 
 **Key principles:**
@@ -256,9 +301,9 @@ fn unwrap_or(opt: Option<Int>, default: Int) -> Int {
 
 ## Phase 3: Effect System (Your Differentiator)
 
-**Timeline:** Months 4-7 (Apr 2026 - Jul 2026)
+**Timeline:** Months 4-7 (Feb 2026 - May 2026)
 **Focus:** Make effects first-class, checked, and enforceable
-**Status:** Issue 008 COMPLETE, Issues 009-010 next
+**Status:** Issues 008-009 COMPLETE, Issue 010 is THE CRITICAL PATH
 
 ### Issue 008: Effect System ✅
 **Status:** COMPLETE (Feb 5, 2026)
@@ -268,13 +313,18 @@ fn unwrap_or(opt: Option<Int>, default: Int) -> Int {
 - Effect annotations on functions: `fn f() -> T & {Fs, Net}`
 - Extern function effect declarations (required, not optional)
 - Two-phase constraint solver (type equality then effect subset)
-- Rémy-style row unification for effect rows
 - Effect variable generalization and instantiation in schemes
-- Cycle detection and canonical variable resolution in solver
-- Higher-order effect propagation
+- Cycle detection and canonical variable resolution
+- Comprehensive error messages for effect mismatches
 
 **Example working code:**
 ```strata
+// Pure function
+fn add(x: Int, y: Int) -> Int & {} {
+    x + y
+}
+
+// Effectful functions
 extern fn read_file(path: String) -> String & {Fs};
 extern fn fetch(url: String) -> String & {Net};
 
@@ -282,93 +332,149 @@ fn download_and_save(url: String, path: String) -> () & {Fs, Net} {
     let data = fetch(url);
     read_file(path)
 }
-
-// Pure functions — no annotation needed
-fn add(x: Int, y: Int) -> Int { x + y }
 ```
 
-**Test stats:** 354 tests after Issue 008
+**Test stats:** 354 tests (all passing)
 
-### Issue 009: Capability Types
-**Status:** Ready to start
-**Estimated time:** 5-7 days
+**External validation:**
+> "You are solving the 'Laundering' problem correctly. 90% of effect systems fail because they allow effects to be laundered through higher-order functions or ADTs. Your test `adversarial_generic_adt_preserves_effects_through_type_param` proves your unifier is sophisticated. Many junior language designers miss this. You didn't."
 
-**Scope:**
-- Five capability types: FsCap, NetCap, TimeCap, RandCap, AiCap
-- Capabilities as function parameters
-- Compiler enforces: effect {X} requires XCap in scope
-- Extern functions must have capability params for declared effects
-- Capabilities cannot be stored in ADTs
+### Issue 009: Capability Types ✅
+**Status:** COMPLETE (Feb 6-7, 2026)
+**Phase:** 3 (Effect System)
+**Duration:** 1 week
+**Tests:** 398 (44 new, 11% increase)
 
-**Example:**
+**What was built:**
+- Five capability types: `FsCap`, `NetCap`, `TimeCap`, `RandCap`, `AiCap`
+- First-class `Ty::Cap(CapKind)` in the type system (leaf type, not ADT)
+- Mandatory `validate_caps_against_effects()` for all functions and extern functions
+- Name shadowing protection (reserved capability type names)
+- Ergonomic error hints (FsCap/Fs confusion detection)
+
+**Critical fix: Zero-cap skip eliminated.**
+The initial implementation had a conditional guard that silently skipped capability validation for functions with zero capability parameters. Three independent external reviewers flagged this as critical. The fix made validation mandatory — no conditional bypass, no exceptions.
+
+**External validation (3 independent sources):**
+- Security Review: 7/10 (up from 5/10) — "Core bypass patched. Zero-cap functions/externs with concrete effects now error as MissingCapability/ExternMissingCapability, enforcing 'no ambient' soundly."
+- PL Researcher: "Green Light — Strata now possesses a mathematically sound capability-security model."
+- Technical Assessment: 0.87-0.90 (up from 0.80-0.85) — "You removed the single biggest security/DX footgun (skip-on-zero-caps). That wasn't a minor bug; it was a 'silent bypass' class."
+
+**Known gaps:**
+- Open effect tail polymorphism at instantiation sites may need additional checking
+- No warnings for unused capabilities
+- Missing tests for: polymorphic HOF + partial concrete effects, mutual recursion SCC, deep recursion chains
+- Capability provisioning (how `main` gets capabilities) deferred to Issue 011
+
+**Example working code:**
 ```strata
-fn read_file(path: String, fs: FsCap) -> String & {Fs} { ... }
+extern fn read_file(path: String, fs: FsCap) -> String & {Fs};
+extern fn fetch(url: String, net: NetCap) -> String & {Net};
 
-fn main(fs: FsCap, net: NetCap) -> () & {Fs, Net} { ... }
+fn load_config(fs: FsCap, path: String) -> String & {Fs} {
+    read_file(path, fs)
+}
+
+fn download_and_save(fs: FsCap, net: NetCap, url: String, path: String) -> () & {Fs, Net} {
+    let data = fetch(url, net);
+    write_file(path, data, fs)
+}
 ```
 
-### Issue 010: Affine Types (Linear Capabilities)
-**Status:** Ready after Issue 009
-**Estimated time:** 7-10 days
+### Issue 010: Affine Types (Linear Capabilities) — "The Final Boss"
+**Status:** Ready after Issue 009 (2-3 weeks)
+**Phase:** 3 (Effect System)
+**Depends on:** Issue 009
+**Blocks:** Issue 011
 
-**Scope:**
-- Kind system: Unrestricted (`*`) and Affine (`!`)
-- Move tracking in checker
-- Use-after-move detection
-- Affine values cannot be captured by closures or used in loops
-- Branch consistency validation
+**External validation:**
+> "This is the 'Final Boss' of your type system. If you can implement Affine Types without making the language feel like Rust, you will have achieved something truly unique."
 
-**Example:**
+**Goal:**
+Prevent capability duplication and leaking. Capabilities are *affine* — use at most once.
+
+**Core Concept:**
+Types have kinds:
+- `*` (Unrestricted): Int, String, Bool — can be used any number of times
+- `!` (Affine): FsCap, NetCap, etc. — can be used at most once
+
+**Semantics:**
 ```strata
 fn example(fs: FsCap) -> () & {Fs} {
     use_cap(fs);   // fs moved here
     use_cap(fs);   // ERROR: use of moved value `fs`
 }
+
+// Dropping is allowed (affine, not linear)
+fn drop_ok(fs: FsCap) -> () & {} {
+    ()  // fs unused, that's fine
+}
+
+// Return transfers ownership
+fn passthrough(fs: FsCap) -> FsCap & {} {
+    fs
+}
 ```
 
-**Phase 3 Result:** Effect-typed language with capability security and affine types.
+**Restrictions (v0.1):**
+- Affine values cannot be captured by closures
+- Affine values cannot be used in loops
+- All branches must agree on moved state
+
+**Why this is critical:**
+This enables Demo 2 (Meta-Agent Orchestration with Affine Types), which external validation calls "the Holy Grail of 2026 AI Safety."
+
+**Phase 3 Result:** Complete capability security model with affine types. This is the foundation for everything else.
 
 ---
 
 ## Phase 4: Minimal Viable Runtime
 
-**Timeline:** Months 7-10 (Jul 2026 - Oct 2026)  
-**Focus:** Get the killer demos working end-to-end
+**Timeline:** Months 7-10 (May 2026 - Aug 2026)  
+**Focus:** Make Strata actually run programs with real I/O
 
-### 4.1: Standard Library (Minimal)
+### 4.1: Standard Library (I/O Basics)
 **Estimated time:** 2-3 weeks  
 **Scope:**
-- Core types: `Result<T, E>`, `Option<T>`
-- Primitives: String, Int, Float, Bool
-- Collections: `Vec<T>`, `Map<K, V>`, `Set<T>` (simple implementations)
-- File I/O: `read_file`, `write_file` (capability-gated)
-- HTTP: `http_get`, `http_post` (capability-gated, wrapper around curl/reqwest)
-- Time: `now()`, `log()` (capability-gated)
-- AI: `ai_analyze`, `ai_generate_steps` (wrappers around OpenAI/Anthropic APIs)
-- Utilities: `hash()`, `len()`, `format()`
+- **File I/O:** `read_file`, `write_file`, `exists`, `list_dir`
+- **HTTP client:** `http_get`, `http_post` (basic)
+- **Time operations:** `now()`, `sleep()`, `log()`
+- **AI model APIs:** `ai_generate()`, `ai_analyze()` (wrappers for OpenAI/Anthropic)
+- **Utilities:** `parse_json()`, `hash()`, `len()`, `format()`
 
-**Deferred to v0.2:**
-- Advanced collections (trees, graphs)
-- JSON parsing (use strings for v0.1)
-- Crypto beyond hashing
-- Database drivers
-- Advanced HTTP (streaming, etc.)
+**Critical note from external validation:**
 
-### 4.2: Effect Tracing Runtime
+**Library Gravity Problem:**
+> "People use Python for `boto3` and `pandas`. To succeed, Strata needs:
+> 1. **Seamless FFI** via WASM Component Model (call existing WASM components)
+> 2. **DevOps Standard Library** (HTTP, JSON, YAML, Cloud APIs - all capability-gated)"
+
+**Priority elevated:** DevOps stdlib and FFI are now **v0.1 critical**, not v0.2 nice-to-have.
+
+**Specific stdlib requirements:**
+- HTTP client (comprehensive, not just basic)
+- JSON parsing/serialization
+- YAML parsing
+- Cloud provider API wrappers (AWS, GCP, Azure) - at least HTTP wrappers
+- All operations capability-gated
+
+**FFI Strategy:**
+- WASM Component Model integration for calling existing WASM components
+- Don't force users to rewrite everything
+- Leverage existing ecosystem
+- Timeline: Build during stdlib phase, not after
+
+### 4.2: Effect Tracing (Runtime Hook)
 **Estimated time:** 1-2 weeks  
 **Scope:**
-- Intercept all effectful operations
-- Log to structured trace (JSON)
-- Trace format: timestamp, effect type, parameters, result
-- Seedable RNG and Time (for determinism)
-- CLI flag: `--trace output.json`
+- Hook into effectful operations
+- Capture inputs/outputs as JSON
+- Emit trace to file or stdout
+- CLI: `--trace` flag
 
-**Design consideration: Toggleable tracing for performance**
-
-Effect tracing should be optional to avoid overhead in performance-critical scenarios:
-
+**Design:**
 ```bash
-# Default: Tracing enabled (audit trails are the value proposition)
+# Default behavior: tracing enabled
 strata run deploy.strata --trace trace.json
 
 # Optional: Disable tracing for performance
@@ -390,11 +496,11 @@ strata replay trace.json
   "program": "deploy.strata",
   "start_time": "2026-08-15T10:00:00Z",
   "effects": [
-    {"timestamp": "...", "effect": "FS.Read", "path": "/model.pkl", "bytes": 1048576},
-    {"timestamp": "...", "effect": "Net.Post", "url": "https://...", "status": 200},
+    {"timestamp": "...", "effect": "Fs", "operation": "read", "path": "/model.pkl", "bytes": 1048576},
+    {"timestamp": "...", "effect": "Net", "operation": "post", "url": "https://...", "status": 200},
     ...
   ],
-  "result": "Ok(\"deploy-123\")",
+  "result": {"ok": "deploy-123"},
   "duration_ms": 1234
 }
 ```
@@ -418,27 +524,40 @@ strata replay failed.json
 # Reproduces same failure deterministically
 ```
 
+**Critical for Demo 3:** Time-Travel Bug Hunting
+
 ### 4.4: WASM Compilation (Basic)
 **Estimated time:** 2-3 weeks  
 **Scope:**
-- Lower AST → WASM instructions
+- Lower AST → WASM instructions (emit WAT, compile via wat2wasm)
 - Basic function calls
 - Arithmetic and logic operations
 - Memory management (arena-per-function)
 - FFI stubs for effects
+
+**Critical note from external validation:**
+
+**Main Definition:**
+> "You need to formalize how a Strata program starts. Confidence-building design: `fn main(fs: FsCap, net: NetCap) { ... }` where the runtime (WASM host) injects these capabilities based on a manifest. This closes the loop on 'No Ambient Authority.'"
+
+**Implementation:**
+- Define `fn main()` signature with explicit capability parameters
+- Runtime injects capabilities based on manifest file
+- Manifest specifies which capabilities the program gets
+- No ambient authority — all caps come from main
 
 **Deferred to v0.2:**
 - Optimization passes
 - Advanced WASM features
 - Custom VM with bytecode
 
-**Phase 4 Result:** Working killer demos with effect traces and deterministic replay.
+**Phase 4 Result:** Working killer demos with effect traces and deterministic replay. FFI via WASM Component Model enables calling existing ecosystem.
 
 ---
 
 ## Phase 5: Hardening & Launch
 
-**Timeline:** Months 10-14 (Oct 2026 - Feb 2027)  
+**Timeline:** Months 10-14 (Aug 2026 - Dec 2026)  
 **Focus:** Make v0.1 production-ready and ship it
 
 ### 5.1: Developer Experience
@@ -448,6 +567,8 @@ strata replay failed.json
 - Warnings for common mistakes
 - Help text and documentation strings
 - Stack traces with source spans
+
+**Critical for affine types:** Error messages must be exceptionally clear for move semantics, since this is unfamiliar to target audience (ops engineers, not Rust developers).
 
 ### 5.2: Tooling Basics
 **Estimated time:** 2-3 weeks  
@@ -467,13 +588,17 @@ strata replay failed.json
 **Scope:**
 - Tutorial (from first program to killer demo)
 - Effect system guide
+- Capability security explained (for non-PL people)
+- Affine types explained (without referencing Rust)
 - Standard library reference
 - Examples repository
+
+**Critical:** Ops engineers are the audience, not PL researchers. Avoid academic jargon.
 
 ### 5.4: Examples & Demos
 **Estimated time:** 2-3 weeks  
 **Scope:**
-- Polish the two killer demos
+- Polish the three killer demos (deployments, agents, replay)
 - Add 10-15 example programs
 - Blog posts explaining key features
 - Video walkthrough of demos
@@ -506,6 +631,10 @@ These features are important but not required for v0.1:
 ### Deferred Language Features
 - **Profile Enforcement** (`@profile(Kernel)` annotations)
 - **Effect Handlers** (algebraic effects with continuations)
+- **Capability Attenuation** (Issue 010.5 - for Demo 5: Blast Radius Controller)
+  - Type operations: `Cap<A+B>` → `Cap<A>`
+  - Estimated: 5-7 days
+  - Enables dynamic authority slicing
 - **DSU Solver Rewrite** (Union-Find + worklist for scale)
 - **Row polymorphism** (effect variables: `fn f<E>() -> T & E`)
 - **Actors & supervision** (concurrency model)
@@ -524,8 +653,7 @@ These features are important but not required for v0.1:
 
 ### Deferred Stdlib
 - Advanced collections (trees, graphs, ropes)
-- JSON/serialization
-- Database drivers
+- Database drivers (beyond HTTP wrappers)
 - Advanced HTTP (streaming, WebSockets)
 - Crypto beyond hashing
 - Compression
@@ -542,10 +670,10 @@ These features are important but not required for v0.1:
 **Phase 2 (Complete):** Type System - Functions, Inference, ADTs, Patterns
 **Months 1-4** ✅
 
-**Phase 3 (In Progress):** Effect System - Effect checking, Capabilities, Affine Types
-**Months 4-7** (Issue 008 ✅, Issues 009-010 next)
+**Phase 3 (In Progress - CRITICAL):** Effect System - Effect checking, Capabilities, Affine Types
+**Months 4-7** (Issues 008-009 ✅, Issue 010 next — THE CRITICAL PATH)
 
-**Phase 4:** Runtime - Stdlib, Tracing, Replay, WASM  
+**Phase 4:** Runtime - Stdlib + FFI, Tracing, Replay, WASM  
 **Months 7-10**
 
 **Phase 5:** Hardening & Launch - DX, Tooling, Docs, Release  
@@ -553,9 +681,16 @@ These features are important but not required for v0.1:
 
 **Total: 10-14 months from project start to v0.1 launch**
 
+**Critical 3-Month Window (Feb-May 2026):**
+- Month 5 (Feb): Issue 009 (Capabilities - Kill the Escape Hatch) ✅ DONE
+- Month 6 (Mar): Issue 010 (Affine Types - The Final Boss) ← NEXT
+- Month 7 (Apr-May): Issue 011 (Runtime + Demos - Prove the Value)
+
+**If Issues 009-011 succeed: Technical confidence → 90%+**
+
 ---
 
-## Current Status (v0.0.8)
+## Current Status (v0.0.9)
 
 **Completed:**
 - ✅ Parser & AST (Issue 001)
@@ -568,17 +703,23 @@ These features are important but not required for v0.1:
 - ✅ Security Hardening (Issue 006-Hardening)
 - ✅ ADTs & Pattern Matching (Issue 007)
 - ✅ Effect System (Issue 008)
+- ✅ Capability Types (Issue 009) ← NEW
 
-**Next Up:**
-- Issue 009: Capability Types
-- Issue 010: Affine Types (Linear Capabilities)
-- Issue 011: WASM Runtime + Effect Traces
+**Next Up (The Critical Path):**
+- Issue 010: Affine Types — "The Final Boss" (2-3 weeks)
+- Issue 011: WASM Runtime + Effect Traces (3-4 weeks)
 
 **Project Stats:**
-- 354 tests (all passing)
+- 398 tests (all passing)
 - 4 crates (ast, parse, types, cli)
-- ~7,000+ lines of Rust
+- ~9,000+ lines of Rust
 - 0 clippy warnings (enforced)
+
+**External validation (Feb 2026, 3 independent sources):**
+- Security Review: 7/10 — "Core bypass patched, no ambient authority enforced"
+- PL Researcher: "Green Light — mathematically sound capability-security model"
+- Technical Assessment: 0.87-0.90 — "Single biggest security/DX footgun removed"
+- Warning: "Will live or die by rigor" — no compromises
 
 ---
 
@@ -591,9 +732,9 @@ These features are important but not required for v0.1:
 - ✅ Control flow (if/while/return)
 - ✅ ADTs and pattern matching
 - ✅ Effect system complete
-- ⏳ Capability types
-- ⏳ Affine types (linearity)
-- ⏳ Working killer demos
+- ✅ Capability types (Issue 009) — externally validated
+- ⏳ Affine types / linearity (Issue 010 - critical, NEXT)
+- ⏳ Working killer demos (Issue 011)
 
 ### Quality Metrics
 - Test coverage >90% (currently ~85%)
@@ -602,6 +743,7 @@ These features are important but not required for v0.1:
 - Clear error messages (improving)
 
 ### Launch Metrics (v0.1)
+
 **Good success:**
 - 10+ GitHub stars/week after launch
 - Blog posts/discussions in Rust/Haskell/ops communities
@@ -627,11 +769,11 @@ These features are important but not required for v0.1:
 - [`IMPLEMENTED.md`](IMPLEMENTED.md) - Detailed feature status
 - [`IN_PROGRESS.md`](IN_PROGRESS.md) - Current work and next steps
 - [`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md) - Technical and architectural choices
-- [`KILLER_DEMOS.md`](KILLER_DEMOS.md) - v0.1 demo specifications
+- [`KILLER_DEMOS.md`](KILLER_DEMOS.md) - v0.1 demo specifications (3 core + 3 expansion)
 - [`issues/`](../issues/) - Detailed issue specifications
 
 ---
 
-**Last Updated:** February 5, 2026
-**Current Version:** v0.0.8
-**Next Review:** After Issue 011 completion
+**Last Updated:** February 7, 2026
+**Current Version:** v0.0.9
+**Next Review:** After Issue 010 completion

@@ -1,0 +1,40 @@
+// capabilities.strata - Capability types gate effect usage
+//
+// In Strata, effects track *what* side effects a function performs,
+// and capabilities enforce *that the caller has permission*.
+//
+// A function that performs {Fs} effects must have a FsCap parameter.
+// Capabilities flow down from main — there is no other way to obtain them.
+
+// Extern functions must have capability params matching their effects
+extern fn read_file(path: String, fs: FsCap) -> String & {Fs};
+extern fn write_file(path: String, data: String, fs: FsCap) -> () & {Fs};
+extern fn fetch(url: String, net: NetCap) -> String & {Net};
+
+// A function with FsCap can perform {Fs} effects
+fn load_config(fs: FsCap, path: String) -> String & {Fs} {
+    read_file(path, fs)
+}
+
+// Multiple capabilities for multiple effects
+fn download_and_save(
+    fs: FsCap,
+    net: NetCap,
+    url: String,
+    path: String
+) -> () & {Fs, Net} {
+    let data = fetch(url, net);
+    write_file(path, data, fs)
+}
+
+// Capabilities can be passed through to callees (pass-through pattern)
+fn load_and_process(fs: FsCap, path: String) -> String & {Fs} {
+    load_config(fs, path)
+}
+
+// A function with a capability but no corresponding effect is valid
+// (it may pass the capability downstream without using it directly)
+fn passthrough(fs: FsCap, x: Int) -> Int { x + 1 }
+
+// Pure functions need no capabilities
+fn add(x: Int, y: Int) -> Int { x + y }

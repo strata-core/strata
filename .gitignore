@@ -43,3 +43,5 @@ cargo-test-workspace-output.txt
 strata*.tar.gz
 claude.md
 docs/design-principles-private.md
+docs/confidence-tracking-private.md
+docs/positioning-private.md
