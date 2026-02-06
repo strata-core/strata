@@ -692,3 +692,120 @@ fn adversarial_let_generalization_module_level_infers_correctly() {
     "#,
     );
 }
+
+// ============================================================================
+// HARDENING TESTS — External Review Exploits
+//
+// These tests target specific attack vectors identified by independent
+// security and type-theory reviewers. If tests 1, 2, or 4 compile
+// without error, that indicates a critical effect inference bug.
+// ============================================================================
+
+#[test]
+fn hardening_exploit_1_polymorphic_hof_open_tail_smuggling() {
+    // Exploit 1: A polymorphic HOF has an open effect tail that gets
+    // instantiated to concrete effects at the call site. The zero-cap caller
+    // should fail because the concrete effects ({Fs}) bubble up through
+    // the open tail and require FsCap at the caller.
+    //
+    // apply: ∀E. (t -> r & E, t) -> r & E
+    // When called with do_fs, E is instantiated to {Fs}.
+    // smuggle() declares & {} but transitively uses {Fs} → must error.
+    let err = check_err(
+        r#"
+        extern fn do_fs(fs: FsCap) -> String & {Fs};
+
+        fn apply(f, x) { f(x) }
+
+        fn smuggle(fs: FsCap) -> String & {} {
+            apply(do_fs, fs)
+        }
+    "#,
+    );
+    assert!(
+        err.contains("Fs") || err.contains("effect") || err.contains("Effect"),
+        "CRITICAL: Polymorphic HOF open tail smuggled {{Fs}} past zero-effect caller, got: {err}"
+    );
+}
+
+#[test]
+fn hardening_exploit_2_recursive_open_tail_callback() {
+    // Exploit 2: A recursive function with an open-tail callback parameter.
+    // A zero-cap caller passes an effectful extern. The effects from the callback
+    // must propagate to the caller; without matching effects the caller must fail.
+    let err = check_err(
+        r#"
+        extern fn do_fs(fs: FsCap) -> String & {Fs};
+
+        fn repeat(f, x, n: Int) -> String {
+            if n <= 0 {
+                x
+            } else {
+                repeat(f, f(x), n - 1)
+            }
+        }
+
+        fn smuggle(fs: FsCap) -> String & {} {
+            repeat(do_fs, fs, 3)
+        }
+    "#,
+    );
+    assert!(
+        err.contains("Fs") || err.contains("effect") || err.contains("Effect"),
+        "CRITICAL: Recursive open-tail callback smuggled {{Fs}} past zero-effect caller, got: {err}"
+    );
+}
+
+#[test]
+fn hardening_exploit_3_hof_own_effect_plus_open_callback_tail() {
+    // Exploit 3: A HOF that has its OWN concrete effect ({Fs}) plus an open callback
+    // tail from calling its parameter. The function needs FsCap for its own {Fs}
+    // effect, but should NOT need caps for the callback's parametric effects.
+    // This should compile successfully.
+    check_ok(
+        r#"
+        extern fn do_fs(fs: FsCap) -> String & {Fs};
+
+        fn pure_fn(n: Int) -> String { "ok" }
+
+        fn apply_with_log(fs: FsCap, f, x) -> String & {Fs} {
+            let _log = do_fs(fs);
+            f(x)
+        }
+
+        fn caller(fs: FsCap, x: Int) -> String & {Fs} {
+            apply_with_log(fs, pure_fn, x)
+        }
+    "#,
+    );
+}
+
+#[test]
+fn hardening_exploit_4_mutual_recursion_scc_introduces_effect() {
+    // Exploit 4: Mutual recursion SCC where one function introduces {Fs}.
+    // pong has FsCap (so it can call ping) but declares & {} (pure).
+    // Since pong transitively calls ping which does {Fs}, pong's declared
+    // effects must include {Fs}. Declaring & {} should fail.
+    let err = check_err(
+        r#"
+        extern fn do_fs(fs: FsCap) -> String & {Fs};
+
+        fn ping(fs: FsCap, n: Int) -> String & {Fs} {
+            if n <= 0 { do_fs(fs) } else { pong(fs, n - 1) }
+        }
+
+        fn pong(fs: FsCap, n: Int) -> String & {} {
+            if n <= 0 { "done" } else { ping(fs, n - 1) }
+        }
+    "#,
+    );
+    assert!(
+        err.contains("Fs")
+            || err.contains("effect")
+            || err.contains("Effect")
+            || err.contains("FsCap")
+            || err.contains("capability")
+            || err.contains("Capability"),
+        "CRITICAL: Mutual recursion SCC allowed {{Fs}} effect without matching annotation on pong, got: {err}"
+    );
+}
