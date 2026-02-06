@@ -601,7 +601,7 @@ reviewer = Agent("grok-2", tools=["read_file", "write_file", "git", "github"])
 - [x] Control flow
 - [x] ADTs
 - [x] Effect syntax
-- [ ] Capabilities (Issue 009)
+- [x] Capabilities (Issue 009) ✅
 - [ ] Affine types (Issue 010) ← CRITICAL
 - [ ] Effect tracing runtime
 - [ ] Replay runner
@@ -611,6 +611,39 @@ reviewer = Agent("grok-2", tools=["read_file", "write_file", "git", "github"])
 - Git operations
 - GitHub API operations
 - AI model APIs (Claude, ChatGPT, Grok)
+
+### Authority Analysis
+
+Because capabilities are explicit parameters and effects are tracked, you can analyze agent authority:
+
+**Before deployment:**
+```bash
+# What capabilities does each agent have?
+$ strata analyze blast-radius orchestrate_feature.strata
+
+orchestrate_feature: {Fs, Git, GitHub, Ai}
+├─ architect_agent: {Fs(read-only), Ai}
+├─ developer_agent: {Fs, Git, Ai}
+└─ reviewer_agent: {Fs(read-only), GitHub, Ai}
+```
+
+**After execution:**
+```bash
+# Which capabilities were actually used?
+$ strata analyze trace orchestrate-run.json
+
+reviewer_agent:
+  Granted: {Fs, GitHub, Ai}
+  Exercised: {Fs, GitHub, Ai}
+  ✓ All capabilities used
+```
+
+This helps answer:
+- What's the maximum access each agent has?
+- Are any capabilities granted but unused?
+- Which function granted which capability?
+
+**Note:** These analysis tools are planned for v0.1 as basic CLI commands.
 
 ---
 

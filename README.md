@@ -75,6 +75,8 @@ fn deploy(cfg: Config) -> Result<o> & {Fs, Net, Env}
 
 Security teams can grep for `{Net}` effects in sensitive environments. **Compliance becomes type checking.**
 
+Effect traces can be analyzed to compare granted vs exercised capabilities, helping identify over-provisioned access. Combined with static analysis of call graphs, this provides clear visibility into what automation can and does access.
+
 **3. Reproducible Failures**
 
 When automation fails at 3 AM, you can't reproduce it locally. Strata's effect traces capture every I/O operation. Run `strata replay trace.json` and debug the exact failure deterministically.
