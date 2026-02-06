@@ -37,6 +37,8 @@ pub enum TokKind {
     OrOr,
     // unary
     Bang, // <-- needed for '!'
+    // effect annotation
+    Ampersand, // single '&' for effect annotations
     // idents / keywords
     Ident(String),
     KwLet,
@@ -52,6 +54,7 @@ pub enum TokKind {
     KwMatch,  // match keyword (ADT support)
     KwEnum,   // enum keyword (ADT support)
     KwStruct, // struct keyword (ADT support)
+    KwExtern, // extern keyword (extern fn declarations)
     // literals
     Int(i64),
     Float(f64),

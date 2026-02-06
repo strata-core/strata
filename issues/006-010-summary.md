@@ -82,9 +82,9 @@ fn sum(n: Int) -> Int {
 
 # Issue 007: ADTs & Pattern Matching
 
-**Status:** Design Review  
-**Estimated time:** 10-14 days  
-**Phase:** 2 (Basic Type System)  
+**Status:** ✅ Complete
+**Completed:** February 4, 2026
+**Phase:** 2 (Basic Type System)
 **Depends on:** Issue 006
 
 ## Goal
@@ -101,146 +101,201 @@ enum Option<T> {
 
 fn unwrap_or<T>(opt: Option<T>, default: T) -> T {
     match opt {
-        Some(x) => x,
-        None => default,
+        Option::Some(x) => x,
+        Option::None => default,
     }
 }
 ```
 
-## Scope
-- Struct definitions
-- Enum definitions with variants
-- Generic type parameters
-- Match expressions
-- Pattern matching (literals, vars, constructors)
-- Exhaustiveness checking
+## What Was Built
+- Struct definitions with named fields
+- Enum definitions with unit + tuple variants
+- Generic type parameters on ADTs
+- Match expressions with exhaustiveness checking (Maranget algorithm)
+- Nested patterns, wildcards, literals, variable binders
+- Unreachable arm detection (warnings)
+- Irrefutable destructuring let (`let (a, b) = pair;`)
+- Capability-in-ADT ban (safety infrastructure)
 
-## Design Decisions Under Review
-
-| ID | Decision | Recommendation |
-|----|----------|----------------|
-| D1 | Nested patterns (`Some(Some(x))`) | Yes |
-| D2 | Match guards (`if x > 0`) | Defer |
-| D3 | Tuple types `(Int, String)` | Defer |
-| D4 | Variant syntax (unit/tuple/struct) | All three |
-| D5 | Struct update (`..other`) | Defer |
-| D6 | Visibility (`pub struct`) | Defer |
-
-## Soundness Concerns (from Gemini)
-
-1. **Constructor Variance** — `Option<Never>` problem
-   - Solution: Constructors as polymorphic functions (`None : ∀T. () -> Option<T>`)
-
-2. **Pattern Scoping** — Bindings introduced by patterns
-   - Solution: `PatternBindings` struct, mutability tracked per-binding
-
-3. **Exhaustiveness + Never** — Match type when arms return Never
-   - Solution: Match type = join of non-Never arm types
-
-4. **Redundant Patterns** — Dead arms as security risk
-   - Solution: Maranget algorithm with warnings
-
-## Definition of Done
-- [ ] AST for struct/enum/match
-- [ ] Parser for ADT syntax
-- [ ] Type checking with generics
-- [ ] Pattern compilation
-- [ ] Exhaustiveness checker (Maranget)
-- [ ] Tests for Option/Result patterns
-- [ ] Evaluator support
+**Test coverage:** 292 tests
 
 ---
 
-# Issue 008: Effect Syntax & Checking
+# Issue 008: Effect System
 
-**Status:** Planned  
-**Estimated time:** 10 days  
-**Phase:** 3 (Effect System)  
+**Status:** ✅ Complete
+**Completed:** February 5, 2026
+**Phase:** 3 (Effect System)
 **Depends on:** Issue 007
 
-## Goal
-Parse and check effect annotations at compile time.
+## Summary
 
-## Note on Elaboration
-Issues 005 (constraint solving) and 008 (effect checking) together form 
-the elaboration phase: converting inferred types (Ty with variables) to 
-surface types (Type with effect rows).
+First-class effect tracking with Rémy-style row polymorphism.
 
-## Syntax
-```strata
-fn read_file(path: String, using fs: FsCap) 
-    -> Result<String, IoErr> & {FS} 
-{
-    // ...
-}
-```
+**What was built:**
+- Bitmask-based EffectRow with 5 effects: Fs, Net, Time, Rand, Ai
+- Effect annotations on functions: `fn f() -> T & {Fs, Net}`
+- Extern function effect declarations (required, not optional)
+- Two-phase constraint solver (type equality then effect subset)
+- Effect variable generalization and instantiation in schemes
+- Cycle detection and canonical variable resolution in solver
+- Comprehensive error messages for effect mismatches
 
-## Scope
-- Parse `& {Effect1, Effect2}` syntax
-- Parse `using cap: CapType` parameters
-- Effect inference (extend constraint system)
-- Effect checking (callee ⊆ caller)
+**Test coverage:** 354 tests
 
-## Definition of Done
-- [ ] Effect annotation syntax in parser
-- [ ] Effect row in function types
-- [ ] Effect inference algorithm
-- [ ] Effect subtyping checker
-- [ ] Tests for effect errors
-- [ ] Tests for effect polymorphism
+**Key design decisions:**
+- ADR-0005 documents effect system architecture
+- Effects are closed sets (bitmask), not extensible in v0.1
+- Constructors are always pure
+- Extern functions must declare effects (no silent pure default)
 
 ---
 
 # Issue 009: Capability Types
 
-**Status:** Planned  
-**Estimated time:** 5 days  
-**Phase:** 3 (Effect System)  
+**Status:** Ready to start
+**Estimated time:** 5-7 days
+**Phase:** 3 (Effect System)
 **Depends on:** Issue 008
 
 ## Goal
-Define capability types and enforce no-ambient-authority.
 
-## Scope
-- Standard caps: `NetCap`, `FsCap`, `TimeCap`, `RandCap`
-- Capability must be in scope to use effect
-- Compiler error if effect used without cap
-
-## Definition of Done
-- [ ] Capability type definitions
-- [ ] Compiler checks cap in scope
-- [ ] Error when effect used without cap
-- [ ] Tests for missing caps
-
----
-
-# Issue 010: Profile Enforcement
-
-**Status:** Planned  
-**Estimated time:** 5 days  
-**Phase:** 3 (Effect System)  
-**Depends on:** Issue 009
-
-## Goal
-Enforce profile restrictions at compile time.
+Introduce capability types that gate effect usage. Enforces "no ambient authority."
 
 ## Syntax
 ```strata
-@profile(Kernel)
-fn safe(x: Int) -> Int {
-    // Cannot use Net, FS, Time, Rand
-    x * 2
-}
+// Capability types (opaque, provided by runtime)
+FsCap, NetCap, TimeCap, RandCap, AiCap
+
+// Functions requiring capabilities
+fn read_file(path: String, fs: FsCap) -> String & {Fs} { ... }
+
+// Entry point receives capabilities
+fn main(fs: FsCap, net: NetCap) -> () & {Fs, Net} { ... }
 ```
 
 ## Scope
-- Parse `@profile(...)` annotation
-- Check no forbidden effects
-- Check no dynamic allocation (Kernel)
-- Module-level profiles
+
+- Five capability types corresponding to five effects
+- Capabilities as function parameters
+- Compiler enforces: effect {X} requires XCap in scope
+- Extern functions must have capability params for declared effects
+- Capabilities cannot be stored in ADTs
 
 ## Definition of Done
-- [ ] Profile annotation syntax
-- [ ] Profile checking pass
-- [ ] Tests for each profile
-- [ ] Error messages for violations
+
+- [ ] AST/Parser: Capability type syntax
+- [ ] Type system: Ty::Cap(CapKind) variant
+- [ ] Checker: Enforce capability-effect correspondence
+- [ ] Checker: Extern function capability validation
+- [ ] Error messages with help text
+- [ ] Tests: positive and negative cases
+- [ ] Documentation: ADR for capability design
+
+---
+
+# Issue 010: Affine Types (Linear Capabilities)
+
+**Status:** Ready after Issue 009
+**Estimated time:** 7-10 days
+**Phase:** 3 (Effect System)
+**Depends on:** Issue 009
+
+## Goal
+
+Prevent capability duplication and leaking. Capabilities are *affine* — use at most once.
+
+## Core Concept
+
+Types have kinds:
+- `*` (Unrestricted): Int, String, Bool — can be used any number of times
+- `!` (Affine): FsCap, NetCap, etc. — can be used at most once
+
+## Semantics
+```strata
+fn example(fs: FsCap) -> () & {Fs} {
+    use_cap(fs);   // fs moved here
+    use_cap(fs);   // ERROR: use of moved value `fs`
+}
+
+// Dropping is allowed (affine, not linear)
+fn drop_ok(fs: FsCap) -> () & {} {
+    ()  // fs unused, that's fine
+}
+
+// Return transfers ownership
+fn passthrough(fs: FsCap) -> FsCap & {} {
+    fs
+}
+```
+
+## Restrictions (v0.1)
+
+- Affine values cannot be captured by closures
+- Affine values cannot be used in loops
+- All branches must agree on moved state
+
+## Definition of Done
+
+- [ ] Kind system: Unrestricted and Affine
+- [ ] Move tracking in checker
+- [ ] Error on use-after-move
+- [ ] Error on closure capture of affine values
+- [ ] Error on affine values in loops
+- [ ] Branch consistency validation
+- [ ] Clear error messages
+- [ ] Tests for all move semantics cases
+- [ ] Documentation: ADR for affine types
+
+---
+
+# Issue 011: WASM Runtime + Effect Traces
+
+**Status:** Ready after Issue 010
+**Estimated time:** 2-3 weeks
+**Phase:** 4 (Runtime)
+**Depends on:** Issue 010
+
+## Goal
+
+Compile Strata to WASM. Run with real I/O. Generate effect traces. Support deterministic replay.
+
+## Architecture
+
+- **Compilation:** Emit WAT (WebAssembly Text), convert via wat2wasm
+- **Runtime:** WASI host functions for Fs, Net, Time, Rand, Ai
+- **Capabilities:** i32 handles into runtime-managed table
+- **Tracing:** JSON audit log emitted at host boundary
+- **Replay:** Host functions return recorded values from trace
+
+## CLI
+```bash
+strata build src/app.strata -o app.wasm
+strata run app.wasm --trace trace.json
+strata run app.wasm --no-trace
+strata replay trace.json
+```
+
+## Trace Format
+```json
+{
+  "program": "app.strata",
+  "started_at": "2026-02-05T10:30:00Z",
+  "effects": [
+    { "seq": 0, "effect": "Fs", "operation": "read", "inputs": {...}, "outputs": {...} }
+  ],
+  "result": { "ok": "..." }
+}
+```
+
+## Definition of Done
+
+- [ ] WAT emitter for Strata AST
+- [ ] WASI host functions (fs, net, time, rand, ai)
+- [ ] Capability handle threading
+- [ ] Trace emission at host boundary
+- [ ] JSON trace serialization
+- [ ] Replay mode
+- [ ] CLI commands: build, run, replay
+- [ ] Tests: compile, run, trace, replay
+- [ ] Documentation: trace format spec

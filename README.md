@@ -1,6 +1,6 @@
 # Strata — Layered Safety by Design
 
-> **Status:** Early development — Issue 007 (ADTs & Pattern Matching) complete
+> **Status:** v0.0.8 — Effect System complete
 > **License:** MIT
 > **Language:** Rust
 
@@ -43,17 +43,21 @@ Strata is a general-purpose, strongly typed programming language designed for **
 - Sound type system with real error messages
 - Scope-stack evaluator with closures
 - CLI with automatic type checking
-- **292 comprehensive tests** (all passing)
+- **Compile-time effect system** with 5 built-in effects (Fs, Net, Time, Rand, Ai)
+- Effect annotations: `fn f() -> Int & {Fs, Net} { ... }`
+- Extern function declarations: `extern fn read(path: String) -> String & {Fs};`
+- Effect inference for unannotated functions
+- Higher-order effect propagation
+- **354 comprehensive tests** (all passing)
 
 ✅ **Security Hardening:**
-- DoS protection: source size (1MB), token count (200K), parser nesting (512), inference depth (512), eval call depth (1000)
+- DoS protection: source size (1MB), token count (200K), parser nesting (512), inference depth (512), eval call depth (1000), effect vars (4096)
 - Soundness: `Ty::Never` only unifies with itself
 - Removed panic!/expect() from type checker
 - Universal lexer error surfacing
 - Parser depth guards balanced on all error paths
 
 📋 **Next Up:**
-- Issue 008: Effect system enforcement
 - Issue 009-010: Capabilities, profiles
 
 **Target v0.1:** November 2026 - February 2027
@@ -71,7 +75,7 @@ cargo build --workspace
 # Run an example
 cargo run -p strata-cli -- examples/add.strata
 
-# Run tests (292 tests)
+# Run tests (354 tests)
 cargo test --workspace
 ```
 
@@ -128,13 +132,30 @@ struct Point { x: Int, y: Int }
 let p = Point { x: a, y: b };
 ```
 
+```strata
+// Effect system - compile-time side effect tracking
+extern fn read_file(path: String) -> String & {Fs};
+extern fn fetch(url: String) -> String & {Net};
+
+// Must declare effects used in the body
+fn download_and_save(url: String, path: String) -> () & {Fs, Net} {
+    let data = fetch(url);
+    read_file(path)
+}
+
+// Pure functions — no annotation needed (or use & {} to be explicit)
+fn add(x: Int, y: Int) -> Int { x + y }
+```
+
+**Built-in effects:** `Fs` (filesystem), `Net` (network), `Time` (clock), `Rand` (randomness), `Ai` (model calls)
+
 ## Development
 
 ```bash
 # Build everything
 cargo build --workspace
 
-# Run all tests (292 tests)
+# Run all tests (354 tests)
 cargo test --workspace
 
 # Run clippy (enforced in CI)
@@ -148,7 +169,7 @@ cargo fmt
 
 **Phase 1 (Complete):** Parser, AST, basic type checking ✅
 **Phase 2 (Complete):** Functions ✅, hardening ✅, blocks ✅, ADTs ✅
-**Phase 3 (Current):** Effect system, capabilities, profiles
+**Phase 3 (Current):** Effect system ✅, capabilities, profiles
 **Phase 4:** Runtime, stdlib, WASM compilation, replay
 **Phase 5:** Tooling, docs, killer demos, v0.1 launch  
 

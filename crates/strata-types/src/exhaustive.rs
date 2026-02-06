@@ -566,12 +566,13 @@ impl<'a> ExhaustivenessChecker<'a> {
                     ty.clone()
                 }
             }
-            Ty::Arrow(params, ret) => Ty::arrow(
+            Ty::Arrow(params, ret, eff) => Ty::arrow_eff(
                 params
                     .iter()
                     .map(|t| self.substitute_type_args(t, args))
                     .collect(),
                 self.substitute_type_args(ret, args),
+                *eff,
             ),
             Ty::Tuple(tys) => Ty::Tuple(
                 tys.iter()

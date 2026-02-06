@@ -7,8 +7,9 @@
 //! This is more extensible than Algorithm W and better suited
 //! for adding effects and other extensions later.
 
-use super::ty::{free_vars, Constraint, Scheme, Ty, TypeVarId};
+use super::ty::{free_effect_vars, free_vars, Constraint, Scheme, Ty, TypeVarId};
 use crate::adt::AdtRegistry;
+use crate::effects::{EffectRow, EffectVarId};
 use crate::exhaustive::{self, ExhaustivenessError};
 use std::collections::{HashMap, HashSet};
 use strata_ast::ast::{BinOp, Block, Expr, FieldInit, Lit, MatchArm, Pat, Path, Stmt, UnOp};
@@ -16,6 +17,9 @@ use strata_ast::span::Span;
 
 /// Maximum inference depth to prevent stack overflow from pathological input
 const MAX_INFER_DEPTH: u32 = 512;
+
+/// Maximum number of effect variables per module (DoS protection)
+const MAX_EFFECT_VARS: u32 = 4096;
 
 /// Errors that can occur during type inference
 #[derive(Debug, Clone)]
@@ -74,6 +78,19 @@ pub enum InferError {
     RefutablePattern { pat_desc: String, span: Span },
     /// Capability type found in a binding
     CapabilityInBinding { cap_type: String, span: Span },
+    /// Effect variable limit exceeded (DoS protection)
+    EffectVarLimitExceeded { limit: u32 },
+    /// Cyclic effect variable substitution
+    EffectCycle { var: crate::effects::EffectVarId },
+    /// Effect substitution chain too deep
+    EffectChainTooDeep { depth: usize },
+    /// Scheme instantiation arity mismatch (internal invariant violation)
+    InstantiationArityMismatch {
+        expected_types: usize,
+        got_types: usize,
+        expected_effects: usize,
+        got_effects: usize,
+    },
 }
 
 /// Context for type checking within a scope
@@ -90,6 +107,8 @@ pub struct CheckContext {
     pub expected_return: Option<Ty>,
     /// ADT registry for looking up struct/enum definitions (for pattern checking)
     pub adt_registry: Option<AdtRegistry>,
+    /// Effect row for the current function body (effects from calls accumulate here)
+    pub body_effects: Option<EffectRow>,
 }
 
 impl CheckContext {
@@ -100,6 +119,7 @@ impl CheckContext {
             mutability: HashMap::new(),
             expected_return: None,
             adt_registry: None,
+            body_effects: None,
         }
     }
 
@@ -110,6 +130,7 @@ impl CheckContext {
             mutability: HashMap::new(),
             expected_return: None,
             adt_registry: None,
+            body_effects: None,
         }
     }
 
@@ -120,16 +141,18 @@ impl CheckContext {
             mutability: HashMap::new(),
             expected_return: None,
             adt_registry: Some(registry),
+            body_effects: None,
         }
     }
 
-    /// Create a child context with the same expected_return and registry
+    /// Create a child context with the same expected_return, registry, and body_effects
     pub fn child(&self) -> Self {
         CheckContext {
             env: self.env.clone(),
             mutability: self.mutability.clone(),
             expected_return: self.expected_return.clone(),
             adt_registry: self.adt_registry.clone(),
+            body_effects: self.body_effects,
         }
     }
 
@@ -155,6 +178,8 @@ impl Default for CheckContext {
 pub struct InferCtx {
     /// Counter for generating fresh type variables
     fresh_counter: u32,
+    /// Counter for generating fresh effect variables
+    fresh_effect_counter: u32,
     /// Collected constraints
     constraints: Vec<Constraint>,
     /// Current inference depth (for recursion limit)
@@ -166,6 +191,7 @@ impl InferCtx {
     pub fn new() -> Self {
         InferCtx {
             fresh_counter: 0,
+            fresh_effect_counter: 0,
             constraints: vec![],
             depth: 0,
         }
@@ -188,9 +214,68 @@ impl InferCtx {
 
     /// Generate a fresh type variable
     pub fn fresh_var(&mut self) -> Ty {
+        Ty::Var(self.fresh_var_id())
+    }
+
+    /// Generate a fresh TypeVarId (just the ID, not wrapped in Ty::Var)
+    pub fn fresh_var_id(&mut self) -> TypeVarId {
         let id = TypeVarId(self.fresh_counter);
         self.fresh_counter += 1;
-        Ty::Var(id)
+        id
+    }
+
+    /// Generate a fresh EffectVarId (just the ID, not a full row)
+    ///
+    /// Returns an error if the effect variable limit is exceeded (DoS protection).
+    pub fn fresh_effect_var_id(&mut self) -> Result<EffectVarId, InferError> {
+        if self.fresh_effect_counter >= MAX_EFFECT_VARS {
+            return Err(InferError::EffectVarLimitExceeded {
+                limit: MAX_EFFECT_VARS,
+            });
+        }
+        let id = EffectVarId(self.fresh_effect_counter);
+        self.fresh_effect_counter += 1;
+        Ok(id)
+    }
+
+    /// Generate a fresh open effect row (with a fresh tail variable)
+    ///
+    /// Returns an error if the effect variable limit is exceeded (DoS protection).
+    pub fn fresh_effect_var(&mut self) -> Result<EffectRow, InferError> {
+        let id = self.fresh_effect_var_id()?;
+        Ok(EffectRow::open(0, id))
+    }
+
+    /// Instantiate a type scheme with fresh type and effect variables
+    ///
+    /// Pre-generates all fresh variables then delegates to `Scheme::instantiate`.
+    /// This avoids the double-borrow issue that arises with closure-based APIs.
+    pub fn instantiate_scheme(&mut self, scheme: &Scheme) -> Result<Ty, InferError> {
+        let fresh_types: Vec<Ty> = (0..scheme.type_vars.len())
+            .map(|_| self.fresh_var())
+            .collect();
+        let fresh_effects: Vec<EffectVarId> = (0..scheme.effect_vars.len())
+            .map(|_| self.fresh_effect_var_id())
+            .collect::<Result<Vec<_>, _>>()?;
+        scheme
+            .instantiate(&fresh_types, &fresh_effects)
+            .map_err(|e| match e {
+                super::subst::SubstError::EffectCycle { var } => InferError::EffectCycle { var },
+                super::subst::SubstError::EffectChainTooDeep { depth } => {
+                    InferError::EffectChainTooDeep { depth }
+                }
+                super::subst::SubstError::InstantiationArityMismatch {
+                    expected_types,
+                    got_types,
+                    expected_effects,
+                    got_effects,
+                } => InferError::InstantiationArityMismatch {
+                    expected_types,
+                    got_types,
+                    expected_effects,
+                    got_effects,
+                },
+            })
     }
 
     /// Add a constraint to the collection
@@ -211,7 +296,12 @@ impl InferCtx {
     /// - ty = t0 -> t0
     /// - env_vars = {} (empty environment)
     /// - Result: ∀t0. t0 -> t0 (polymorphic identity)
-    pub fn generalize(&self, ty: Ty, env_vars: &HashSet<TypeVarId>) -> Scheme {
+    pub fn generalize(
+        &self,
+        ty: Ty,
+        env_vars: &HashSet<TypeVarId>,
+        env_effect_vars: &HashSet<EffectVarId>,
+    ) -> Scheme {
         let ty_vars = free_vars(&ty);
 
         // Variables to generalize = those in type but not in environment
@@ -220,7 +310,19 @@ impl InferCtx {
         // Sort for determinism (makes debugging easier)
         gen_vars.sort_by_key(|v| v.0);
 
-        Scheme { vars: gen_vars, ty }
+        // Collect free effect vars in the type that are not in the environment
+        let ty_effect_vars = free_effect_vars(&ty);
+        let mut gen_effect_vars: Vec<EffectVarId> = ty_effect_vars
+            .difference(env_effect_vars)
+            .copied()
+            .collect();
+        gen_effect_vars.sort_by_key(|v| v.0);
+
+        Scheme {
+            type_vars: gen_vars,
+            effect_vars: gen_effect_vars,
+            ty,
+        }
     }
 
     /// Infer the type of an expression, generating constraints
@@ -257,7 +359,7 @@ impl InferCtx {
             // Variables: look up scheme and instantiate
             Expr::Var(ident) => {
                 if let Some(scheme) = ctx.env.get(&ident.text) {
-                    Ok(scheme.instantiate(|| self.fresh_var()))
+                    self.instantiate_scheme(scheme)
                 } else {
                     Err(InferError::UnknownVariable {
                         name: ident.text.clone(),
@@ -290,8 +392,14 @@ impl InferCtx {
                 // Create fresh var for result
                 let result_ty = self.fresh_var();
 
-                // Add constraint: func_ty = (arg_tys) -> result_ty
-                let expected_fn_ty = Ty::arrow(arg_tys, result_ty.clone());
+                // Use fresh effect var for callee's effects (will be resolved by unification)
+                let callee_eff = self.fresh_effect_var()?;
+                let expected_fn_ty = Ty::arrow_eff(arg_tys, result_ty.clone(), callee_eff);
+
+                // Propagate callee effects to enclosing function body
+                if let Some(body_eff) = ctx.body_effects {
+                    self.add_constraint(Constraint::EffectSubset(callee_eff, body_eff, *span));
+                }
                 let call_span = match callee.as_ref() {
                     Expr::Var(id) => id.span,
                     Expr::Paren {
@@ -465,7 +573,7 @@ impl InferCtx {
                 let value_ty = self.infer_expr_ctx(ctx, value)?;
 
                 // Constrain value type to match target type
-                let target_ty = target_scheme.instantiate(|| self.fresh_var());
+                let target_ty = self.instantiate_scheme(target_scheme)?;
                 self.add_constraint(Constraint::Equal(value_ty, target_ty, *span));
 
                 Ok(())
@@ -820,11 +928,11 @@ impl InferCtx {
                 })?;
 
                 // Instantiate constructor scheme
-                let ctor_ty = scheme.instantiate(|| self.fresh_var());
+                let ctor_ty = self.instantiate_scheme(scheme)?;
 
                 // Constructor type should be Arrow(params, result)
                 let (param_tys, result_ty) = match &ctor_ty {
-                    Ty::Arrow(params, ret) => (params.clone(), ret.as_ref().clone()),
+                    Ty::Arrow(params, ret, _eff) => (params.clone(), ret.as_ref().clone()),
                     _ => {
                         // Not a function - might be a unit constructor
                         (vec![], ctor_ty.clone())
@@ -1100,7 +1208,7 @@ impl InferCtx {
 
         // Look up in environment - could be an enum constructor
         if let Some(scheme) = ctx.env.get(&name) {
-            return Ok(scheme.instantiate(|| self.fresh_var()));
+            return self.instantiate_scheme(scheme);
         }
 
         // Not found
@@ -1171,12 +1279,13 @@ fn substitute_type_vars(ty: &Ty, subst: &HashMap<TypeVarId, Ty>) -> Ty {
     match ty {
         Ty::Var(v) => subst.get(v).cloned().unwrap_or_else(|| ty.clone()),
         Ty::Const(_) | Ty::Never => ty.clone(),
-        Ty::Arrow(params, ret) => Ty::arrow(
+        Ty::Arrow(params, ret, eff) => Ty::arrow_eff(
             params
                 .iter()
                 .map(|t| substitute_type_vars(t, subst))
                 .collect(),
             substitute_type_vars(ret, subst),
+            *eff,
         ),
         Ty::Tuple(tys) => Ty::Tuple(tys.iter().map(|t| substitute_type_vars(t, subst)).collect()),
         Ty::List(t) => Ty::List(Box::new(substitute_type_vars(t, subst))),
@@ -1280,9 +1389,10 @@ mod tests {
         let ctx = InferCtx::new();
         let ty = Ty::int();
         let env_vars = HashSet::new();
+        let env_eff_vars = HashSet::new();
 
-        let scheme = ctx.generalize(ty.clone(), &env_vars);
-        assert_eq!(scheme.vars.len(), 0);
+        let scheme = ctx.generalize(ty.clone(), &env_vars, &env_eff_vars);
+        assert_eq!(scheme.type_vars.len(), 0);
         assert_eq!(scheme.ty, ty);
     }
 
@@ -1292,9 +1402,10 @@ mod tests {
         // Type: t0 -> t0
         let ty = Ty::arrow1(Ty::Var(TypeVarId(0)), Ty::Var(TypeVarId(0)));
         let env_vars = HashSet::new(); // Empty environment
+        let env_eff_vars = HashSet::new();
 
-        let scheme = ctx.generalize(ty.clone(), &env_vars);
-        assert_eq!(scheme.vars, vec![TypeVarId(0)]);
+        let scheme = ctx.generalize(ty.clone(), &env_vars, &env_eff_vars);
+        assert_eq!(scheme.type_vars, vec![TypeVarId(0)]);
         assert_eq!(scheme.ty, ty);
     }
 
@@ -1307,10 +1418,11 @@ mod tests {
         // t0 is in environment, so don't generalize it
         let mut env_vars = HashSet::new();
         env_vars.insert(TypeVarId(0));
+        let env_eff_vars = HashSet::new();
 
-        let scheme = ctx.generalize(ty.clone(), &env_vars);
+        let scheme = ctx.generalize(ty.clone(), &env_vars, &env_eff_vars);
         // Only t1 should be generalized
-        assert_eq!(scheme.vars, vec![TypeVarId(1)]);
+        assert_eq!(scheme.type_vars, vec![TypeVarId(1)]);
         assert_eq!(scheme.ty, ty);
     }
 

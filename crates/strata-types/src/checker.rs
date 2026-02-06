@@ -5,10 +5,11 @@ use super::adt::{
     contains_capability, find_capability_name, AdtDef, AdtRegistry, FieldDef, VariantDef,
     VariantFields,
 };
-use super::infer::ty::{Scheme, Ty, TypeVarId};
+use super::effects::{Effect, EffectRow};
+use super::infer::ty::{free_effect_vars_env, Scheme, Ty, TypeVarId};
 use super::infer::{InferCtx, Solver};
 use std::collections::HashMap;
-use strata_ast::ast::{EnumDef, Item, LetDecl, Module, StructDef, TypeExpr};
+use strata_ast::ast::{EnumDef, Ident, Item, LetDecl, Module, StructDef, TypeExpr};
 use strata_ast::span::Span;
 
 /// Type errors that can occur during type checking
@@ -81,6 +82,33 @@ pub enum TypeError {
     RefutablePattern { pat_desc: String, span: Span },
     /// Capability type found in a let binding
     CapabilityInBinding { cap_type: String, span: Span },
+    /// Effect row mismatch
+    EffectMismatch {
+        expected: crate::effects::EffectRow,
+        found: crate::effects::EffectRow,
+        span: Span,
+    },
+    /// Effect variable limit exceeded (DoS protection)
+    EffectVarLimitExceeded { limit: u32 },
+    /// Cyclic effect variable substitution
+    EffectCycle {
+        var: crate::effects::EffectVarId,
+        span: Span,
+    },
+    /// Effect substitution chain too deep
+    EffectChainTooDeep { depth: usize, span: Span },
+    /// Unknown effect name
+    UnknownEffect { name: String, span: Span },
+    /// Extern function missing required effect annotation
+    MissingExternEffects { fn_name: String, span: Span },
+    /// Undeclared effect: function uses effects not in its annotation
+    UndeclaredEffect {
+        effect: String,
+        fn_name: String,
+        declared: crate::effects::EffectRow,
+        actual: crate::effects::EffectRow,
+        span: Span,
+    },
 }
 
 impl std::fmt::Display for TypeError {
@@ -246,6 +274,66 @@ impl std::fmt::Display for TypeError {
                     cap_type, span
                 )
             }
+            TypeError::EffectMismatch {
+                expected,
+                found,
+                span,
+            } => {
+                write!(
+                    f,
+                    "Effect mismatch at {:?}: expected {}, found {}",
+                    span, expected, found
+                )
+            }
+            TypeError::EffectVarLimitExceeded { limit } => {
+                write!(
+                    f,
+                    "Effect variable limit ({}) exceeded (pathological input)",
+                    limit
+                )
+            }
+            TypeError::EffectCycle { var, span } => {
+                write!(
+                    f,
+                    "Cyclic effect variable {} at {:?}: effect variable refers to itself",
+                    var, span
+                )
+            }
+            TypeError::EffectChainTooDeep { depth, span } => {
+                write!(
+                    f,
+                    "Effect substitution chain too deep ({} steps) at {:?}; possible cycle",
+                    depth, span
+                )
+            }
+            TypeError::UnknownEffect { name, span } => {
+                write!(
+                    f,
+                    "Unknown effect '{}' at {:?}; known effects are Fs, Net, Time, Rand, Ai",
+                    name, span
+                )
+            }
+            TypeError::MissingExternEffects { fn_name, span } => {
+                write!(
+                    f,
+                    "Extern function '{}' at {:?} must declare its effects. \
+                     Use `& {{}}` for pure or `& {{Fs, Net, ...}}` for effectful.",
+                    fn_name, span
+                )
+            }
+            TypeError::UndeclaredEffect {
+                effect,
+                fn_name,
+                declared,
+                actual,
+                span,
+            } => {
+                write!(
+                    f,
+                    "Function '{}' uses {} but only declares {}; add {} to the effect annotation at {:?}",
+                    fn_name, actual, declared, effect, span
+                )
+            }
         }
     }
 }
@@ -308,7 +396,10 @@ impl TypeChecker {
             .map_err(solve_error_to_type_error)?;
 
         // Apply substitution to get final type
-        Ok(subst.apply(&ty))
+        let final_ty = subst
+            .apply(&ty)
+            .map_err(|e| subst_error_to_type_error(e, expr.span()))?;
+        Ok(final_ty)
     }
 
     /// Type check an entire module using two-pass approach
@@ -340,16 +431,25 @@ impl TypeChecker {
         // This ensures that recursive calls see the same type variables,
         // preventing unsound polymorphic self-reference.
         for item in &module.items {
-            if let Item::Fn(decl) = item {
-                // Extract function signature with fresh type vars
-                let fn_ty = self.extract_fn_signature(decl)?;
+            match item {
+                Item::Fn(decl) => {
+                    // Extract function signature with fresh type vars
+                    let fn_ty = self.extract_fn_signature(decl)?;
 
-                // Store MONOMORPHIC placeholder - do NOT generalize yet!
-                // This is critical: recursive calls must see the same type vars.
-                let fn_scheme = Scheme::mono(fn_ty);
+                    // Store MONOMORPHIC placeholder - do NOT generalize yet!
+                    // This is critical: recursive calls must see the same type vars.
+                    let fn_scheme = Scheme::mono(fn_ty);
 
-                // Add to environment
-                self.env.insert(decl.name.text.clone(), fn_scheme);
+                    // Add to environment
+                    self.env.insert(decl.name.text.clone(), fn_scheme);
+                }
+                Item::ExternFn(decl) => {
+                    // Register extern fn with its type signature (no body to check)
+                    let fn_ty = self.extract_extern_fn_signature(decl)?;
+                    let fn_scheme = Scheme::mono(fn_ty);
+                    self.env.insert(decl.name.text.clone(), fn_scheme);
+                }
+                _ => {}
             }
         }
 
@@ -369,6 +469,8 @@ impl TypeChecker {
             // ADT registration happens in pass 1 (register_struct/register_enum)
             Item::Struct(_) => Ok(()),
             Item::Enum(_) => Ok(()),
+            // Extern fn has no body; type was registered in pass 1c
+            Item::ExternFn(_) => Ok(()),
         }
     }
 
@@ -403,7 +505,9 @@ impl TypeChecker {
             .map_err(solve_error_to_type_error)?;
 
         // Apply substitution to get final type
-        let final_ty = subst.apply(&inferred_ty);
+        let final_ty = subst
+            .apply(&inferred_ty)
+            .map_err(|e| subst_error_to_type_error(e, decl.span))?;
 
         // Check for capability types in the resolved binding type
         if contains_capability(&final_ty) {
@@ -417,7 +521,10 @@ impl TypeChecker {
         // Generalize: free vars in type that aren't already in environment become ∀-bound
         use super::infer::ty::free_vars_env;
         let env_vars = free_vars_env(&self.env);
-        let scheme = self.infer_ctx.generalize(final_ty, &env_vars);
+        let env_eff_vars = free_effect_vars_env(&self.env);
+        let scheme = self
+            .infer_ctx
+            .generalize(final_ty, &env_vars, &env_eff_vars);
 
         // Add to environment
         self.env.insert(decl.name.text.clone(), scheme);
@@ -445,11 +552,14 @@ impl TypeChecker {
 
         // The scheme is monomorphic (no ∀-bound vars), so instantiate returns the same type.
         // This is critical: recursive calls within the body will see the SAME type vars.
-        let predeclared_ty = predeclared_scheme.instantiate(|| self.infer_ctx.fresh_var());
+        let predeclared_ty = self
+            .infer_ctx
+            .instantiate_scheme(&predeclared_scheme)
+            .map_err(infer_error_to_type_error)?;
 
-        // Extract param and return types from the arrow
-        let (param_tys, ret_ty) = match &predeclared_ty {
-            Ty::Arrow(params, ret) => (params.clone(), ret.as_ref().clone()),
+        // Extract param, return types, and declared effect row from the arrow
+        let (param_tys, ret_ty, declared_eff) = match &predeclared_ty {
+            Ty::Arrow(params, ret, eff) => (params.clone(), ret.as_ref().clone(), *eff),
             _ => {
                 return Err(TypeError::InvariantViolation {
                     msg: format!(
@@ -461,10 +571,18 @@ impl TypeChecker {
             }
         };
 
+        // Create a fresh effect var for the function body.
+        // Call site constraints will accumulate effects into this var.
+        let body_eff = self
+            .infer_ctx
+            .fresh_effect_var()
+            .map_err(infer_error_to_type_error)?;
+
         // Create a CheckContext for the function body with ADT registry
         let mut fn_ctx =
             CheckContext::from_env_with_registry(self.env.clone(), self.adt_registry.clone());
         fn_ctx.expected_return = Some(ret_ty.clone());
+        fn_ctx.body_effects = Some(body_eff);
 
         // Add parameters to function context (parameters are immutable)
         for (param, param_ty) in decl.params.iter().zip(param_tys.iter()) {
@@ -492,6 +610,15 @@ impl TypeChecker {
                 ));
         }
 
+        // Constrain body effects to fit within declared effect row.
+        // body_eff ⊆ declared_eff ensures the function only uses effects it declares.
+        self.infer_ctx
+            .add_constraint(super::infer::ty::Constraint::EffectSubset(
+                body_eff,
+                declared_eff,
+                decl.span,
+            ));
+
         // Solve constraints
         let constraints = self.infer_ctx.take_constraints();
         let mut solver = Solver::new();
@@ -500,7 +627,9 @@ impl TypeChecker {
             .map_err(solve_error_to_type_error)?;
 
         // Apply substitution to get the final function type
-        let final_fn_ty = subst.apply(&predeclared_ty);
+        let final_fn_ty = subst
+            .apply(&predeclared_ty)
+            .map_err(|e| subst_error_to_type_error(e, decl.span))?;
 
         // NOW generalize: compute env vars excluding this function's own type vars
         // (since this function is still monomorphic in env, its vars are included in env_vars,
@@ -508,7 +637,10 @@ impl TypeChecker {
         let mut env_for_generalize = self.env.clone();
         env_for_generalize.remove(&decl.name.text);
         let env_vars = free_vars_env(&env_for_generalize);
-        let gen_scheme = self.infer_ctx.generalize(final_fn_ty, &env_vars);
+        let env_eff_vars = free_effect_vars_env(&env_for_generalize);
+        let gen_scheme = self
+            .infer_ctx
+            .generalize(final_fn_ty, &env_vars, &env_eff_vars);
 
         // Update environment with the generalized scheme
         self.env.insert(decl.name.text.clone(), gen_scheme);
@@ -540,8 +672,76 @@ impl TypeChecker {
             self.infer_ctx.fresh_var()
         };
 
-        // Create function type: (params) -> ret
-        Ok(Ty::arrow(param_tys, ret_ty))
+        // Convert effect annotation to EffectRow
+        let eff = if let Some(ref effects) = decl.effects {
+            self.resolve_effect_annotation(effects)?
+        } else {
+            // No annotation: use fresh effect var (inferred/open)
+            self.infer_ctx
+                .fresh_effect_var()
+                .map_err(infer_error_to_type_error)?
+        };
+
+        Ok(Ty::arrow_eff(param_tys, ret_ty, eff))
+    }
+
+    /// Extract an extern function's type signature (no body).
+    fn extract_extern_fn_signature(
+        &mut self,
+        decl: &strata_ast::ast::ExternFnDecl,
+    ) -> Result<Ty, TypeError> {
+        let mut param_tys = Vec::new();
+        for param in &decl.params {
+            let param_ty = if let Some(ref ty_expr) = param.ty {
+                self.ty_from_type_expr(ty_expr)?
+            } else {
+                self.infer_ctx.fresh_var()
+            };
+            param_tys.push(param_ty);
+        }
+
+        let ret_ty = if let Some(ref ty_expr) = decl.ret_ty {
+            self.ty_from_type_expr(ty_expr)?
+        } else {
+            self.infer_ctx.fresh_var()
+        };
+
+        // Convert effect annotation (required for extern fns)
+        let eff = if let Some(ref effects) = decl.effects {
+            self.resolve_effect_annotation(effects)?
+        } else {
+            return Err(TypeError::MissingExternEffects {
+                fn_name: decl.name.text.clone(),
+                span: decl.span,
+            });
+        };
+
+        Ok(Ty::arrow_eff(param_tys, ret_ty, eff))
+    }
+
+    /// Resolve an effect name to an Effect enum variant.
+    fn resolve_effect_name(name: &str, span: Span) -> Result<Effect, TypeError> {
+        match name {
+            "Fs" => Ok(Effect::Fs),
+            "Net" => Ok(Effect::Net),
+            "Time" => Ok(Effect::Time),
+            "Rand" => Ok(Effect::Rand),
+            "Ai" => Ok(Effect::Ai),
+            _ => Err(TypeError::UnknownEffect {
+                name: name.to_string(),
+                span,
+            }),
+        }
+    }
+
+    /// Convert a list of AST effect identifiers to a closed EffectRow.
+    fn resolve_effect_annotation(&self, effects: &[Ident]) -> Result<EffectRow, TypeError> {
+        let mut row = EffectRow::pure();
+        for ident in effects {
+            let effect = Self::resolve_effect_name(&ident.text, ident.span)?;
+            row.insert(effect);
+        }
+        Ok(row)
     }
 
     // ============ ADT Registration (Phase 3) ============
@@ -687,13 +887,7 @@ impl TypeChecker {
         // vars that will be allocated later during type checking. The scheme's bound
         // vars and the fresh vars allocated during instantiation must be DIFFERENT.
         let type_vars: Vec<TypeVarId> = (0..adt_def.arity())
-            .map(|_| {
-                // Extract the TypeVarId from the Ty::Var returned by fresh_var
-                match self.infer_ctx.fresh_var() {
-                    Ty::Var(id) => id,
-                    _ => unreachable!("fresh_var always returns Ty::Var"),
-                }
-            })
+            .map(|_| self.infer_ctx.fresh_var_id())
             .collect();
 
         // The result type for all constructors: EnumName<T0, T1, ...>
@@ -738,7 +932,8 @@ impl TypeChecker {
 
             // Create polymorphic scheme with our fresh vars
             let scheme = Scheme {
-                vars: type_vars.clone(),
+                type_vars: type_vars.clone(),
+                effect_vars: vec![],
                 ty: fn_ty,
             };
 
@@ -756,9 +951,10 @@ fn remap_type_vars(ty: &Ty, remap: &std::collections::HashMap<TypeVarId, Ty>) ->
     match ty {
         Ty::Var(v) => remap.get(v).cloned().unwrap_or_else(|| ty.clone()),
         Ty::Const(_) | Ty::Never => ty.clone(),
-        Ty::Arrow(params, ret) => Ty::arrow(
+        Ty::Arrow(params, ret, eff) => Ty::arrow_eff(
             params.iter().map(|t| remap_type_vars(t, remap)).collect(),
             remap_type_vars(ret, remap),
+            *eff,
         ),
         Ty::Tuple(tys) => Ty::Tuple(tys.iter().map(|t| remap_type_vars(t, remap)).collect()),
         Ty::List(t) => Ty::List(Box::new(remap_type_vars(t, remap))),
@@ -839,11 +1035,7 @@ impl TypeChecker {
                     })
                 }
             }
-            TypeExpr::Arrow {
-                params,
-                ret,
-                span: _,
-            } => {
+            TypeExpr::Arrow { params, ret, .. } => {
                 let param_tys: Result<Vec<Ty>, TypeError> = params
                     .iter()
                     .map(|p| self.ty_from_type_expr_with_params(p, type_params))
@@ -992,13 +1184,36 @@ fn infer_error_to_type_error(err: super::infer::constraint::InferError) -> TypeE
         InferError::CapabilityInBinding { cap_type, span } => {
             TypeError::CapabilityInBinding { cap_type, span }
         }
+        InferError::EffectVarLimitExceeded { limit } => TypeError::EffectVarLimitExceeded { limit },
+        InferError::EffectCycle { var } => TypeError::EffectCycle {
+            var,
+            span: Span { start: 0, end: 0 },
+        },
+        InferError::EffectChainTooDeep { depth } => TypeError::EffectChainTooDeep {
+            depth,
+            span: Span { start: 0, end: 0 },
+        },
+        InferError::InstantiationArityMismatch {
+            expected_types,
+            got_types,
+            ..
+        } => TypeError::ArityMismatch {
+            expected: expected_types,
+            found: got_types,
+            span: Span { start: 0, end: 0 },
+        },
     }
 }
 
 /// Convert a SolveError (which includes span) to checker TypeError
 fn solve_error_to_type_error(err: super::infer::solver::SolveError) -> TypeError {
     let span = err.span;
-    match err.error {
+    unifier_error_to_type_error(err.error, span)
+}
+
+/// Convert a unifier TypeError to a checker TypeError with a span
+fn unifier_error_to_type_error(err: super::infer::unifier::TypeError, span: Span) -> TypeError {
+    match err {
         super::infer::unifier::TypeError::Mismatch(expected, found) => TypeError::Mismatch {
             expected,
             found,
@@ -1010,6 +1225,37 @@ fn solve_error_to_type_error(err: super::infer::solver::SolveError) -> TypeError
         super::infer::unifier::TypeError::Arity { left, right } => TypeError::ArityMismatch {
             expected: left,
             found: right,
+            span,
+        },
+        super::infer::unifier::TypeError::EffectMismatch { expected, found } => {
+            TypeError::EffectMismatch {
+                expected,
+                found,
+                span,
+            }
+        }
+        super::infer::unifier::TypeError::EffectCycle { var } => {
+            TypeError::EffectCycle { var, span }
+        }
+        super::infer::unifier::TypeError::EffectChainTooDeep { depth } => {
+            TypeError::EffectChainTooDeep { depth, span }
+        }
+    }
+}
+
+/// Convert a SubstError to a checker TypeError with a span
+fn subst_error_to_type_error(err: super::infer::subst::SubstError, span: Span) -> TypeError {
+    use super::infer::subst::SubstError;
+    match err {
+        SubstError::EffectCycle { var } => TypeError::EffectCycle { var, span },
+        SubstError::EffectChainTooDeep { depth } => TypeError::EffectChainTooDeep { depth, span },
+        SubstError::InstantiationArityMismatch {
+            expected_types,
+            got_types,
+            ..
+        } => TypeError::ArityMismatch {
+            expected: expected_types,
+            found: got_types,
             span,
         },
     }

@@ -1,7 +1,7 @@
 # Strata Roadmap
 
-**Last Updated:** February 3, 2026  
-**Current Version:** v0.0.7.0  
+**Last Updated:** February 5, 2026
+**Current Version:** v0.0.8
 **Target v0.1:** November 2026 - February 2027 (10-14 months from project start)
 
 This document describes the planned roadmap for Strata, organized by development phases. It reflects strategic decisions made in January 2026 to focus on a **minimal, shippable v0.1** that proves core value propositions.
@@ -116,10 +116,10 @@ See [`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md) for complete design philosophy 
 
 ---
 
-## Phase 2: Type System Foundations (Mostly Complete ✅)
+## Phase 2: Type System Foundations (Complete ✅)
 
-**Timeline:** Months 1-4 (Jan 2026 - Apr 2026)  
-**Status:** Issues 005-006 COMPLETE, Issue 007 in progress
+**Timeline:** Months 1-4 (Jan 2026 - Apr 2026)
+**Status:** COMPLETE (Issues 005-007)
 
 ### Issue 005: Functions & Inference ✅
 **Status:** COMPLETE (Feb 1, 2026)
@@ -218,11 +218,20 @@ fn sum_to(n: Int) -> Int {
 
 **Test stats:** 163 tests passing (30 new hardening tests)
 
-### Issue 007: ADTs & Pattern Matching (IN PROGRESS)
-**Status:** Design review in progress  
-**Estimated time:** 10-14 days
+### Issue 007: ADTs & Pattern Matching ✅
+**Status:** COMPLETE (Feb 4, 2026)
 
-**Scope:**
+**What was built:**
+- Struct definitions with named fields
+- Enum definitions with unit + tuple variants
+- Generic type parameters on ADTs (`Option<T>`, `Result<T, E>`)
+- Match expressions with exhaustiveness checking (Maranget algorithm)
+- Nested patterns, wildcards, literals, variable binders
+- Unreachable arm detection (warnings)
+- Irrefutable destructuring let (`let (a, b) = pair;`)
+- Capability-in-ADT ban (safety infrastructure)
+
+**Example working code:**
 ```strata
 struct Point { x: Int, y: Int }
 
@@ -231,31 +240,15 @@ enum Option<T> {
     None,
 }
 
-fn unwrap_or<T>(opt: Option<T>, default: T) -> T {
+fn unwrap_or(opt: Option<Int>, default: Int) -> Int {
     match opt {
-        Some(x) => x,
-        None => default,
+        Option::Some(x) => x,
+        Option::None => default,
     }
 }
 ```
 
-**What will be built:**
-- Struct definitions
-- Enum definitions with variants
-- Generic type parameters
-- Match expressions
-- Pattern matching (literals, vars, constructors)
-- Exhaustiveness checking (Maranget algorithm)
-
-**Critical soundness concerns being reviewed:**
-1. Constructor variance (constructors as polymorphic functions)
-2. Pattern scoping (mutability tracking in match arms)
-3. Exhaustiveness + Never (match type = join of non-Never arms)
-4. Redundant patterns (dead arms as security risk)
-
-**Current activity:** Design review
-
-**Estimated completion:** Mid-February 2026
+**Test stats:** 292 tests after Issue 007
 
 **Phase 2 Result:** Complete type system with HM inference, polymorphism, ADTs, and pattern matching.
 
@@ -263,73 +256,77 @@ fn unwrap_or<T>(opt: Option<T>, default: T) -> T {
 
 ## Phase 3: Effect System (Your Differentiator)
 
-**Timeline:** Months 4-7 (Apr 2026 - Jul 2026)  
+**Timeline:** Months 4-7 (Apr 2026 - Jul 2026)
 **Focus:** Make effects first-class, checked, and enforceable
+**Status:** Issue 008 COMPLETE, Issues 009-010 next
 
-### Issue 008: Effect Syntax & Inference
-**Estimated time:** 2-3 weeks  
-**Scope:**
-- Effect syntax in function signatures: `fn f() -> T & {FS, Net}`
-- Effect inference and checking
-- Effect row unification
-- Effect propagation through call sites
+### Issue 008: Effect System ✅
+**Status:** COMPLETE (Feb 5, 2026)
 
-**Elaboration phase:**
-- Ty (inference) → Type (surface with effects)
-- Effect rows attached to function types
-- Type → Ty lowering for checking
+**What was built:**
+- Bitmask-based EffectRow with 5 effects: Fs, Net, Time, Rand, Ai
+- Effect annotations on functions: `fn f() -> T & {Fs, Net}`
+- Extern function effect declarations (required, not optional)
+- Two-phase constraint solver (type equality then effect subset)
+- Rémy-style row unification for effect rows
+- Effect variable generalization and instantiation in schemes
+- Cycle detection and canonical variable resolution in solver
+- Higher-order effect propagation
 
-**Example:**
+**Example working code:**
 ```strata
-fn read_file(path: String) -> Result<String, IoErr> & {FS}
+extern fn read_file(path: String) -> String & {Fs};
+extern fn fetch(url: String) -> String & {Net};
 
-fn process_files(paths: Vec<String>) -> Result<(), IoErr> & {FS} {
-    for path in paths {
-        let content = read_file(path)?;
-        // Effect {FS} propagates
-    }
+fn download_and_save(url: String, path: String) -> () & {Fs, Net} {
+    let data = fetch(url);
+    read_file(path)
 }
+
+// Pure functions — no annotation needed
+fn add(x: Int, y: Int) -> Int { x + y }
 ```
+
+**Test stats:** 354 tests after Issue 008
 
 ### Issue 009: Capability Types
-**Estimated time:** 1 week  
+**Status:** Ready to start
+**Estimated time:** 5-7 days
+
 **Scope:**
-- Capability type definitions
-- `using cap: Type` parameter syntax
-- Capability passing at call sites
-- Capability checking enforcement
+- Five capability types: FsCap, NetCap, TimeCap, RandCap, AiCap
+- Capabilities as function parameters
+- Compiler enforces: effect {X} requires XCap in scope
+- Extern functions must have capability params for declared effects
+- Capabilities cannot be stored in ADTs
 
 **Example:**
 ```strata
-fn http_get(url: Url, using net: NetCap) 
-    -> Result<Bytes, NetErr> & {Net}
+fn read_file(path: String, fs: FsCap) -> String & {Fs} { ... }
 
-// Call site:
-http_get(url, using net)?
+fn main(fs: FsCap, net: NetCap) -> () & {Fs, Net} { ... }
 ```
 
-### Issue 010: Profile Enforcement
-**Estimated time:** 1 week  
+### Issue 010: Affine Types (Linear Capabilities)
+**Status:** Ready after Issue 009
+**Estimated time:** 7-10 days
+
 **Scope:**
-- Profile declarations: `profile Kernel;`
-- Effect restriction by profile
-- Compile-time profile checking
-- Clear error messages
+- Kind system: Unrestricted (`*`) and Affine (`!`)
+- Move tracking in checker
+- Use-after-move detection
+- Affine values cannot be captured by closures or used in loops
+- Branch consistency validation
 
 **Example:**
 ```strata
-profile Kernel;
-
-fn compute(x: Int, y: Int) -> Int {
-    x + y  // OK - pure computation
-}
-
-fn bad_fetch(url: Url) -> String & {Net} {
-    // Compile error: Net effect not allowed in Kernel profile
+fn example(fs: FsCap) -> () & {Fs} {
+    use_cap(fs);   // fs moved here
+    use_cap(fs);   // ERROR: use of moved value `fs`
 }
 ```
 
-**Phase 3 Result:** Effect-typed language with capability security and profile enforcement.
+**Phase 3 Result:** Effect-typed language with capability security and affine types.
 
 ---
 
@@ -507,6 +504,9 @@ strata replay failed.json
 These features are important but not required for v0.1:
 
 ### Deferred Language Features
+- **Profile Enforcement** (`@profile(Kernel)` annotations)
+- **Effect Handlers** (algebraic effects with continuations)
+- **DSU Solver Rewrite** (Union-Find + worklist for scale)
 - **Row polymorphism** (effect variables: `fn f<E>() -> T & E`)
 - **Actors & supervision** (concurrency model)
 - **Async/await syntax** (concurrency primitives)
@@ -539,11 +539,11 @@ These features are important but not required for v0.1:
 **Phase 1 (Complete):** Foundation - Parser, AST, Effects, Basic Types  
 **Months 0-1** ✅
 
-**Phase 2 (Mostly Complete):** Type System - Functions, Inference, ADTs, Patterns  
-**Months 1-4** (Issues 005-006 ✅, Issue 007 in progress)
+**Phase 2 (Complete):** Type System - Functions, Inference, ADTs, Patterns
+**Months 1-4** ✅
 
-**Phase 3 (Next):** Effect System - Effect checking, Capabilities, Profiles  
-**Months 4-7**
+**Phase 3 (In Progress):** Effect System - Effect checking, Capabilities, Affine Types
+**Months 4-7** (Issue 008 ✅, Issues 009-010 next)
 
 **Phase 4:** Runtime - Stdlib, Tracing, Replay, WASM  
 **Months 7-10**
@@ -555,7 +555,7 @@ These features are important but not required for v0.1:
 
 ---
 
-## Current Status (v0.0.7.0)
+## Current Status (v0.0.8)
 
 **Completed:**
 - ✅ Parser & AST (Issue 001)
@@ -566,19 +566,18 @@ These features are important but not required for v0.1:
 - ✅ Soundness Hardening (Issue 005-b)
 - ✅ Blocks & Control Flow (Issue 006)
 - ✅ Security Hardening (Issue 006-Hardening)
-
-**In Progress:**
-- 🔄 ADTs & Pattern Matching (Issue 007) - Design review
+- ✅ ADTs & Pattern Matching (Issue 007)
+- ✅ Effect System (Issue 008)
 
 **Next Up:**
-- Effect Syntax & Inference (Issue 008)
-- Capability Types (Issue 009)
-- Profile Enforcement (Issue 010)
+- Issue 009: Capability Types
+- Issue 010: Affine Types (Linear Capabilities)
+- Issue 011: WASM Runtime + Effect Traces
 
 **Project Stats:**
-- 163 tests (all passing)
+- 354 tests (all passing)
 - 4 crates (ast, parse, types, cli)
-- ~5,500+ lines of Rust
+- ~7,000+ lines of Rust
 - 0 clippy warnings (enforced)
 
 ---
@@ -590,9 +589,10 @@ These features are important but not required for v0.1:
 - ✅ Basic type checking
 - ✅ HM inference with polymorphism
 - ✅ Control flow (if/while/return)
-- 🔄 ADTs and pattern matching (in progress)
-- ⏳ Effect system complete
-- ⏳ Capability enforcement
+- ✅ ADTs and pattern matching
+- ✅ Effect system complete
+- ⏳ Capability types
+- ⏳ Affine types (linearity)
 - ⏳ Working killer demos
 
 ### Quality Metrics
@@ -632,6 +632,6 @@ These features are important but not required for v0.1:
 
 ---
 
-**Last Updated:** February 3, 2026  
-**Current Version:** v0.0.7.0  
-**Next Review:** After Issue 007 completion (est. mid-February 2026)
+**Last Updated:** February 5, 2026
+**Current Version:** v0.0.8
+**Next Review:** After Issue 011 completion

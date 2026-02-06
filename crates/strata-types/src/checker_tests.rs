@@ -1366,6 +1366,7 @@ fn test_option_without_pattern() {
                     span: sp(),
                 }],
                 ret_ty: Some(ty_int()),
+                effects: None,
                 body: Block {
                     stmts: vec![],
                     tail: Some(Box::new(Expr::Lit(Lit::Int(0), sp()))), // Just return 0
@@ -1403,6 +1404,7 @@ fn test_variant_pattern_direct() {
                     span: sp(),
                 }],
                 ret_ty: Some(ty_int()),
+                effects: None,
                 body: Block {
                     stmts: vec![],
                     tail: Some(Box::new(expr_match(
@@ -1439,6 +1441,7 @@ fn test_match_with_literal_pattern() {
                 span: sp(),
             }],
             ret_ty: Some(ty_int()),
+            effects: None,
             body: Block {
                 stmts: vec![],
                 tail: Some(Box::new(expr_match(
@@ -1488,6 +1491,7 @@ fn test_match_option_some_none() {
                     span: sp(),
                 }],
                 ret_ty: Some(ty_int()),
+                effects: None,
                 body: Block {
                     stmts: vec![],
                     tail: Some(Box::new(expr_match(
@@ -1535,6 +1539,7 @@ fn test_match_arm_type_mismatch() {
                     span: sp(),
                 }],
                 ret_ty: None,
+                effects: None,
                 body: Block {
                     stmts: vec![],
                     tail: Some(Box::new(expr_match(
@@ -1619,6 +1624,7 @@ fn test_match_nested_variant_pattern() {
                 name: ident("test"),
                 params: vec![],
                 ret_ty: Some(ty_int()),
+                effects: None,
                 body: Block {
                     stmts: vec![],
                     tail: Some(Box::new(expr_match(
@@ -1701,6 +1707,7 @@ fn test_pattern_variant_arity_mismatch() {
                 name: ident("test"),
                 params: vec![],
                 ret_ty: Some(ty_int()),
+                effects: None,
                 body: Block {
                     stmts: vec![],
                     tail: Some(Box::new(expr_match(
@@ -1750,6 +1757,7 @@ fn test_pattern_unknown_variant() {
                     span: sp(),
                 }],
                 ret_ty: Some(ty_int()),
+                effects: None,
                 body: Block {
                     stmts: vec![],
                     tail: Some(Box::new(expr_match(
@@ -1919,6 +1927,7 @@ fn test_struct_construction() {
                 name: ident("test"),
                 params: vec![],
                 ret_ty: Some(ty_adt("Point")),
+                effects: None,
                 body: Block {
                     stmts: vec![],
                     tail: Some(Box::new(expr_struct(
@@ -1954,6 +1963,7 @@ fn test_struct_missing_field_error() {
                 name: ident("test"),
                 params: vec![],
                 ret_ty: Some(ty_adt("Point")),
+                effects: None,
                 body: Block {
                     stmts: vec![],
                     tail: Some(Box::new(expr_struct(
@@ -1991,6 +2001,7 @@ fn test_struct_unknown_field_error() {
                 name: ident("test"),
                 params: vec![],
                 ret_ty: Some(ty_adt("Point")),
+                effects: None,
                 body: Block {
                     stmts: vec![],
                     tail: Some(Box::new(expr_struct(
@@ -2032,6 +2043,7 @@ fn test_struct_field_type_mismatch() {
                 name: ident("test"),
                 params: vec![],
                 ret_ty: Some(ty_adt("Point")),
+                effects: None,
                 body: Block {
                     stmts: vec![],
                     tail: Some(Box::new(expr_struct(
@@ -2107,6 +2119,7 @@ fn test_struct_pattern_destructuring() {
                     span: sp(),
                 }],
                 ret_ty: Some(ty_int()),
+                effects: None,
                 body: Block {
                     stmts: vec![],
                     tail: Some(Box::new(expr_match(
@@ -2158,6 +2171,7 @@ fn test_exhaustive_option_both_variants() {
                     span: sp(),
                 }],
                 ret_ty: Some(ty_int()),
+                effects: None,
                 body: Block {
                     stmts: vec![],
                     tail: Some(Box::new(expr_match(
@@ -2206,6 +2220,7 @@ fn test_non_exhaustive_option_some_only_error() {
                     span: sp(),
                 }],
                 ret_ty: Some(ty_int()),
+                effects: None,
                 body: Block {
                     stmts: vec![],
                     tail: Some(Box::new(expr_match(
@@ -2253,6 +2268,7 @@ fn test_non_exhaustive_option_none_only_error() {
                     span: sp(),
                 }],
                 ret_ty: Some(ty_int()),
+                effects: None,
                 body: Block {
                     stmts: vec![],
                     tail: Some(Box::new(expr_match(
@@ -2290,6 +2306,7 @@ fn test_exhaustive_bool_both_values() {
                 span: sp(),
             }],
             ret_ty: Some(ty_int()),
+            effects: None,
             body: Block {
                 stmts: vec![],
                 tail: Some(Box::new(expr_match(
@@ -2327,6 +2344,7 @@ fn test_non_exhaustive_bool_true_only_error() {
                 span: sp(),
             }],
             ret_ty: Some(ty_int()),
+            effects: None,
             body: Block {
                 stmts: vec![],
                 tail: Some(Box::new(expr_match(
@@ -2372,6 +2390,7 @@ fn test_exhaustive_with_wildcard() {
                     span: sp(),
                 }],
                 ret_ty: Some(ty_int()),
+                effects: None,
                 body: Block {
                     stmts: vec![],
                     tail: Some(Box::new(expr_match(
@@ -2416,6 +2435,7 @@ fn test_redundant_arm_after_wildcard_error() {
                     span: sp(),
                 }],
                 ret_ty: Some(ty_int()),
+                effects: None,
                 body: Block {
                     stmts: vec![],
                     tail: Some(Box::new(expr_match(
@@ -2456,6 +2476,7 @@ fn test_redundant_bool_after_both_covered() {
                 span: sp(),
             }],
             ret_ty: Some(ty_int()),
+            effects: None,
             body: Block {
                 stmts: vec![],
                 tail: Some(Box::new(expr_match(
@@ -2502,6 +2523,7 @@ fn test_int_literal_needs_wildcard() {
                 span: sp(),
             }],
             ret_ty: Some(ty_string()),
+            effects: None,
             body: Block {
                 stmts: vec![],
                 tail: Some(Box::new(expr_match(
@@ -2544,6 +2566,7 @@ fn test_int_literal_with_wildcard_exhaustive() {
                 span: sp(),
             }],
             ret_ty: Some(ty_string()),
+            effects: None,
             body: Block {
                 stmts: vec![],
                 tail: Some(Box::new(expr_match(
@@ -2591,6 +2614,7 @@ fn test_result_enum_exhaustive() {
                     span: sp(),
                 }],
                 ret_ty: Some(ty_int()),
+                effects: None,
                 body: Block {
                     stmts: vec![],
                     tail: Some(Box::new(expr_match(
@@ -2636,6 +2660,7 @@ fn test_struct_single_constructor_exhaustive() {
                     span: sp(),
                 }],
                 ret_ty: Some(ty_int()),
+                effects: None,
                 body: Block {
                     stmts: vec![],
                     tail: Some(Box::new(expr_match(
@@ -2674,6 +2699,7 @@ fn test_multiple_redundant_arms() {
                 span: sp(),
             }],
             ret_ty: Some(ty_int()),
+            effects: None,
             body: Block {
                 stmts: vec![],
                 tail: Some(Box::new(expr_match(

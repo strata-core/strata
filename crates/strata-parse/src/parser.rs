@@ -2,8 +2,9 @@ use crate::lexer::Lexer;
 use crate::token::{Tok, TokKind};
 use anyhow::{bail, Result};
 use strata_ast::ast::{
-    BinOp, Block, EnumDef, Expr, Field, FieldInit, FnDecl, Ident, Item, LetDecl, Lit, MatchArm,
-    Module, Param, Pat, PatField, Path, Stmt, StructDef, TypeExpr, UnOp, Variant, VariantFields,
+    BinOp, Block, EnumDef, Expr, ExternFnDecl, Field, FieldInit, FnDecl, Ident, Item, LetDecl, Lit,
+    MatchArm, Module, Param, Pat, PatField, Path, Stmt, StructDef, TypeExpr, UnOp, Variant,
+    VariantFields,
 };
 use strata_ast::span::Span;
 
@@ -112,6 +113,7 @@ impl<'a> Parser<'a> {
     fn parse_item(&mut self) -> Result<Item> {
         match self.cur.kind {
             TokKind::KwLet => Ok(Item::Let(self.parse_let()?)),
+            TokKind::KwExtern => Ok(Item::ExternFn(self.parse_extern_fn()?)),
             TokKind::KwFn => Ok(Item::Fn(self.parse_fn_decl()?)),
             TokKind::KwStruct => Ok(Item::Struct(self.parse_struct_def()?)),
             TokKind::KwEnum => Ok(Item::Enum(self.parse_enum_def()?)),
@@ -176,6 +178,9 @@ impl<'a> Parser<'a> {
             None
         };
 
+        // Parse optional effect annotation: & { Fs, Net }
+        let effects = self.parse_effect_annotation()?;
+
         // Parse body block
         let body = self.parse_block()?;
         let body_end = body.span.end;
@@ -184,12 +189,78 @@ impl<'a> Parser<'a> {
             name,
             params,
             ret_ty,
+            effects,
             body,
             span: Span {
                 start,
                 end: body_end,
             },
         })
+    }
+
+    /// Parse an extern function declaration: `extern fn name(params) -> Type & {effects};`
+    fn parse_extern_fn(&mut self) -> Result<ExternFnDecl> {
+        let start = self.cur.span.start;
+        self.expect(TokKind::KwExtern)?;
+        self.expect(TokKind::KwFn)?;
+        let name = self.parse_ident()?;
+
+        // Parse parameters
+        self.expect(TokKind::LParen)?;
+        let params = self.parse_params()?;
+        self.expect(TokKind::RParen)?;
+
+        // Parse optional return type
+        let ret_ty = if matches!(self.cur.kind, TokKind::Arrow) {
+            self.bump();
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        // Parse optional effect annotation
+        let effects = self.parse_effect_annotation()?;
+
+        // Semicolon-terminated (no body)
+        let semi = self.expect(TokKind::Semicolon)?;
+
+        Ok(ExternFnDecl {
+            name,
+            params,
+            ret_ty,
+            effects,
+            span: Span {
+                start,
+                end: semi.span.end,
+            },
+        })
+    }
+
+    /// Parse an optional effect annotation: `& { Ident, Ident, ... }`
+    ///
+    /// Returns `None` if no `&` token is present.
+    /// Returns `Some(vec![])` for `& {}` (explicit empty/pure).
+    fn parse_effect_annotation(&mut self) -> Result<Option<Vec<Ident>>> {
+        if !matches!(self.cur.kind, TokKind::Ampersand) {
+            return Ok(None);
+        }
+        self.bump(); // consume &
+        self.expect(TokKind::LBrace)?;
+
+        let mut effects = Vec::new();
+        if !matches!(self.cur.kind, TokKind::RBrace) {
+            effects.push(self.parse_ident()?);
+            while matches!(self.cur.kind, TokKind::Comma) {
+                self.bump(); // consume comma
+                if matches!(self.cur.kind, TokKind::RBrace) {
+                    break; // trailing comma
+                }
+                effects.push(self.parse_ident()?);
+            }
+        }
+
+        self.expect(TokKind::RBrace)?;
+        Ok(Some(effects))
     }
 
     /// Parse a struct definition: `struct Name<T, U> { field: Type, ... }`
@@ -357,15 +428,21 @@ impl<'a> Parser<'a> {
             self.expect(TokKind::RParen)?;
             self.expect(TokKind::Arrow)?;
             let ret = Box::new(self.parse_type()?);
-            let ret_end = ret.span().end;
+            let mut end = ret.span().end;
+
+            // Parse optional effect annotation on function type
+            let effects = self.parse_effect_annotation()?;
+            if let Some(ref effs) = effects {
+                if let Some(last) = effs.last() {
+                    end = last.span.end;
+                }
+            }
 
             return Ok(TypeExpr::Arrow {
                 params,
                 ret,
-                span: Span {
-                    start,
-                    end: ret_end,
-                },
+                effects,
+                span: Span { start, end },
             });
         }
 

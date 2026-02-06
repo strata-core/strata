@@ -13,7 +13,7 @@ mod types;
 mod checker_tests;
 
 pub use checker::{TypeChecker, TypeError};
-pub use effects::{Effect, EffectRow};
+pub use effects::{Effect, EffectRow, EffectVarId};
 pub use profile::Profile;
 pub use types::{PrimType, Type};
 

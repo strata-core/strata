@@ -18,6 +18,6 @@ mod infer_smoke {
         let a = InferType::var(TypeVarId(0));
         let b = InferType::int();
         u.unify(&a, &b).unwrap();
-        assert_eq!(u.subst().apply(&a), InferType::int());
+        assert_eq!(u.subst().apply(&a).unwrap(), InferType::int());
     }
 }

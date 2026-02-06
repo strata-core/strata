@@ -2,6 +2,8 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use strata_ast::span::Span;
 
+use crate::effects::{EffectRow, EffectVarId};
+
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 pub struct TypeVarId(pub u32);
@@ -38,7 +40,7 @@ pub enum TyConst {
 pub enum Ty {
     Var(TypeVarId),
     Const(TyConst),
-    Arrow(Vec<Ty>, Box<Ty>),
+    Arrow(Vec<Ty>, Box<Ty>, EffectRow),
     /// Heterogeneous, fixed-length tuple: (t0, t1, ..., tn)
     /// Note: Tuples are nominal and desugar to Tuple2<A,B> etc. in type checking.
     Tuple(Vec<Ty>),
@@ -83,17 +85,23 @@ impl Ty {
     pub fn string() -> Self {
         Ty::Const(TyConst::String)
     }
+    /// Create a function type with pure effects (default).
     #[inline]
     pub fn arrow(params: Vec<Ty>, ret: Ty) -> Self {
-        Ty::Arrow(params, Box::new(ret))
+        Ty::Arrow(params, Box::new(ret), EffectRow::pure())
     }
-    // Convenience for single-param arrows
+    /// Create a function type with an explicit effect row.
+    #[inline]
+    pub fn arrow_eff(params: Vec<Ty>, ret: Ty, eff: EffectRow) -> Self {
+        Ty::Arrow(params, Box::new(ret), eff)
+    }
+    // Convenience for single-param arrows (pure)
     pub fn arrow1(param: Ty, ret: Ty) -> Self {
-        Ty::Arrow(vec![param], Box::new(ret))
+        Ty::Arrow(vec![param], Box::new(ret), EffectRow::pure())
     }
-    // Convenience for zero-param (thunks)
+    // Convenience for zero-param (thunks, pure)
     pub fn thunk(ret: Ty) -> Self {
-        Ty::Arrow(vec![], Box::new(ret))
+        Ty::Arrow(vec![], Box::new(ret), EffectRow::pure())
     }
     #[inline]
     pub fn tuple(elems: impl Into<Vec<Ty>>) -> Self {
@@ -133,11 +141,11 @@ impl fmt::Display for Ty {
             Ty::Const(TyConst::Int) => write!(f, "Int"),
             Ty::Const(TyConst::Float) => write!(f, "Float"),
             Ty::Const(TyConst::String) => write!(f, "String"),
-            Ty::Arrow(params, ret) => {
+            Ty::Arrow(params, ret, eff) => {
                 if params.is_empty() {
-                    write!(f, "() -> {}", ret)
+                    write!(f, "() -> {}", ret)?;
                 } else if params.len() == 1 {
-                    write!(f, "{} -> {}", params[0], ret)
+                    write!(f, "{} -> {}", params[0], ret)?;
                 } else {
                     write!(f, "(")?;
                     for (i, p) in params.iter().enumerate() {
@@ -146,8 +154,12 @@ impl fmt::Display for Ty {
                         }
                         write!(f, "{}", p)?;
                     }
-                    write!(f, ") -> {}", ret)
+                    write!(f, ") -> {}", ret)?;
                 }
+                if !eff.is_empty() {
+                    write!(f, " & {}", eff)?;
+                }
+                Ok(())
             }
             Ty::Tuple(xs) => {
                 let mut first = true;
@@ -187,38 +199,65 @@ use std::collections::HashSet;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scheme {
-    pub vars: Vec<TypeVarId>, // The ∀-bound variables
+    pub type_vars: Vec<TypeVarId>,     // The ∀-bound type variables
+    pub effect_vars: Vec<EffectVarId>, // The ∀-bound effect variables
     pub ty: Ty,
 }
 
 impl Scheme {
     /// Create a monomorphic scheme (no ∀ variables)
     pub fn mono(ty: Ty) -> Scheme {
-        Scheme { vars: vec![], ty }
+        Scheme {
+            type_vars: vec![],
+            effect_vars: vec![],
+            ty,
+        }
     }
 
-    /// Instantiate a scheme with fresh type variables
+    /// Instantiate a scheme with fresh type and effect variables
     ///
-    /// Example: ∀α. α -> α becomes β -> β (where β is fresh)
+    /// Example: ∀α e. (α -> α & e) becomes (β -> β & e') (where β, e' are fresh)
     ///
-    /// The `fresh` function should generate a fresh type variable each time it's called.
-    pub fn instantiate<F>(&self, mut fresh: F) -> Ty
-    where
-        F: FnMut() -> Ty,
-    {
-        if self.vars.is_empty() {
+    /// `fresh_types` must have exactly one entry per ∀-bound type variable.
+    /// `fresh_effects` must have exactly one entry per ∀-bound effect variable.
+    ///
+    /// Returns Err if the substitution encounters a cycle (should not happen with
+    /// locally-built substitutions, but we propagate rather than panic).
+    pub fn instantiate(
+        &self,
+        fresh_types: &[Ty],
+        fresh_effects: &[EffectVarId],
+    ) -> Result<Ty, super::subst::SubstError> {
+        if self.type_vars.is_empty() && self.effect_vars.is_empty() {
             // Monomorphic - just return the type
-            return self.ty.clone();
+            return Ok(self.ty.clone());
         }
 
-        // Create substitution: each ∀-bound var maps to a fresh var
+        if fresh_types.len() != self.type_vars.len()
+            || fresh_effects.len() != self.effect_vars.len()
+        {
+            return Err(super::subst::SubstError::InstantiationArityMismatch {
+                expected_types: self.type_vars.len(),
+                got_types: fresh_types.len(),
+                expected_effects: self.effect_vars.len(),
+                got_effects: fresh_effects.len(),
+            });
+        }
+
         use super::subst::Subst;
         let mut subst = Subst::new();
-        for var in &self.vars {
-            subst.insert(*var, fresh());
+
+        // Each ∀-bound type var maps to a fresh type var
+        for (var, fresh) in self.type_vars.iter().zip(fresh_types) {
+            subst.insert(*var, fresh.clone());
         }
 
-        // Apply substitution to the type
+        // Each ∀-bound effect var maps to a fresh open effect row
+        for (var, fresh_id) in self.effect_vars.iter().zip(fresh_effects) {
+            subst.insert_effect(*var, EffectRow::open(0, *fresh_id));
+        }
+
+        // Apply substitution to the type (handles both type vars and effect rows)
         subst.apply(&self.ty)
     }
 }
@@ -229,6 +268,9 @@ pub enum Constraint {
     /// Type equality: t1 ~ t2
     /// Includes the span where this constraint was generated
     Equal(Ty, Ty, Span),
+    /// Effect subset: row1 ⊆ row2
+    /// Used to enforce that a function body's effects fit within its declaration.
+    EffectSubset(EffectRow, EffectRow, Span),
 }
 
 /// Find free type variables in a type
@@ -240,7 +282,7 @@ pub fn free_vars(ty: &Ty) -> HashSet<TypeVarId> {
             set.insert(*id);
             set
         }
-        Ty::Arrow(params, ret) => {
+        Ty::Arrow(params, ret, _eff) => {
             let mut set = HashSet::new();
             for param in params {
                 set.extend(free_vars(param));
@@ -266,6 +308,39 @@ pub fn free_vars(ty: &Ty) -> HashSet<TypeVarId> {
     }
 }
 
+/// Find free effect variables in a type
+pub fn free_effect_vars(ty: &Ty) -> HashSet<EffectVarId> {
+    match ty {
+        Ty::Const(_) | Ty::Never | Ty::Var(_) => HashSet::new(),
+        Ty::Arrow(params, ret, eff) => {
+            let mut set = HashSet::new();
+            for param in params {
+                set.extend(free_effect_vars(param));
+            }
+            set.extend(free_effect_vars(ret));
+            if let Some(tail) = eff.tail {
+                set.insert(tail);
+            }
+            set
+        }
+        Ty::Tuple(tys) => {
+            let mut set = HashSet::new();
+            for ty in tys {
+                set.extend(free_effect_vars(ty));
+            }
+            set
+        }
+        Ty::List(ty) => free_effect_vars(ty),
+        Ty::Adt { args, .. } => {
+            let mut set = HashSet::new();
+            for arg in args {
+                set.extend(free_effect_vars(arg));
+            }
+            set
+        }
+    }
+}
+
 /// Find free type variables in a type scheme
 ///
 /// Free variables are those in the type that are NOT ∀-bound.
@@ -273,10 +348,17 @@ pub fn free_vars(ty: &Ty) -> HashSet<TypeVarId> {
 /// Example: ∀t0. t0 -> t1 has free var t1 (t0 is bound)
 pub fn free_vars_scheme(scheme: &Scheme) -> HashSet<TypeVarId> {
     let ty_vars = free_vars(&scheme.ty);
-    let bound_vars: HashSet<TypeVarId> = scheme.vars.iter().copied().collect();
+    let bound_vars: HashSet<TypeVarId> = scheme.type_vars.iter().copied().collect();
 
     // Free vars = vars in type - bound vars
     ty_vars.difference(&bound_vars).copied().collect()
+}
+
+/// Find free effect variables in a type scheme
+pub fn free_effect_vars_scheme(scheme: &Scheme) -> HashSet<EffectVarId> {
+    let eff_vars = free_effect_vars(&scheme.ty);
+    let bound_vars: HashSet<EffectVarId> = scheme.effect_vars.iter().copied().collect();
+    eff_vars.difference(&bound_vars).copied().collect()
 }
 
 /// Find free type variables across an entire environment
@@ -290,6 +372,17 @@ pub fn free_vars_env(env: &std::collections::HashMap<String, Scheme>) -> HashSet
     vars
 }
 
+/// Find free effect variables across an entire environment
+pub fn free_effect_vars_env(
+    env: &std::collections::HashMap<String, Scheme>,
+) -> HashSet<EffectVarId> {
+    let mut vars = HashSet::new();
+    for scheme in env.values() {
+        vars.extend(free_effect_vars_scheme(scheme));
+    }
+    vars
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,8 +390,7 @@ mod tests {
     #[test]
     fn instantiate_monomorphic() {
         let scheme = Scheme::mono(Ty::int());
-        let fresh = || Ty::Var(TypeVarId(999));
-        let ty = scheme.instantiate(fresh);
+        let ty = scheme.instantiate(&[], &[]).unwrap();
         assert_eq!(ty, Ty::int()); // Unchanged
     }
 
@@ -306,22 +398,70 @@ mod tests {
     fn instantiate_polymorphic() {
         // Scheme: ∀t0. t0 -> t0
         let scheme = Scheme {
-            vars: vec![TypeVarId(0)],
+            type_vars: vec![TypeVarId(0)],
+            effect_vars: vec![],
             ty: Ty::arrow1(Ty::Var(TypeVarId(0)), Ty::Var(TypeVarId(0))),
         };
 
-        let mut counter = 100;
-        let fresh = || {
-            let v = Ty::Var(TypeVarId(counter));
-            counter += 1;
-            v
-        };
-
-        let ty = scheme.instantiate(fresh);
+        let fresh_types = vec![Ty::Var(TypeVarId(100))];
+        let ty = scheme.instantiate(&fresh_types, &[]).unwrap();
         // Should be: t100 -> t100
         assert_eq!(
             ty,
             Ty::arrow1(Ty::Var(TypeVarId(100)), Ty::Var(TypeVarId(100)))
         );
+    }
+
+    #[test]
+    fn instantiate_effect_vars() {
+        // Scheme: ∀t0 e0. t0 -> t0 & e0
+        let scheme = Scheme {
+            type_vars: vec![TypeVarId(0)],
+            effect_vars: vec![EffectVarId(0)],
+            ty: Ty::arrow_eff(
+                vec![Ty::Var(TypeVarId(0))],
+                Ty::Var(TypeVarId(0)),
+                EffectRow::open(0, EffectVarId(0)),
+            ),
+        };
+
+        let fresh_types = vec![Ty::Var(TypeVarId(50))];
+        let fresh_effects = vec![EffectVarId(51)];
+        let ty = scheme.instantiate(&fresh_types, &fresh_effects).unwrap();
+        // Should be: t50 -> t50 & e51
+        assert_eq!(
+            ty,
+            Ty::arrow_eff(
+                vec![Ty::Var(TypeVarId(50))],
+                Ty::Var(TypeVarId(50)),
+                EffectRow::open(0, EffectVarId(51)),
+            )
+        );
+    }
+
+    #[test]
+    fn instantiate_arity_mismatch_returns_error() {
+        use crate::infer::subst::SubstError;
+
+        // Scheme: ∀t0. t0 -> t0 (expects 1 type var, 0 effect vars)
+        let scheme = Scheme {
+            type_vars: vec![TypeVarId(0)],
+            effect_vars: vec![],
+            ty: Ty::arrow1(Ty::Var(TypeVarId(0)), Ty::Var(TypeVarId(0))),
+        };
+
+        // Pass wrong number of fresh types
+        let result = scheme.instantiate(&[], &[]);
+        assert!(matches!(
+            result,
+            Err(SubstError::InstantiationArityMismatch { .. })
+        ));
+
+        // Pass too many fresh types
+        let result = scheme.instantiate(&[Ty::Var(TypeVarId(10)), Ty::Var(TypeVarId(11))], &[]);
+        assert!(matches!(
+            result,
+            Err(SubstError::InstantiationArityMismatch { .. })
+        ));
     }
 }

@@ -34,8 +34,8 @@ fn unify_tuples_propagates_vars() {
     u.unify(&a, &b).unwrap();
 
     let s = u.subst();
-    assert_eq!(s.apply(&v0), Ty::bool_());
-    assert_eq!(s.apply(&v1), Ty::bool_());
+    assert_eq!(s.apply(&v0).unwrap(), Ty::bool_());
+    assert_eq!(s.apply(&v1).unwrap(), Ty::bool_());
 }
 
 #[test]
@@ -44,7 +44,7 @@ fn unify_lists_element_type() {
     let x = Ty::list(Ty::var(TypeVarId(0)));
     let y = Ty::list(Ty::int());
     u.unify(&x, &y).unwrap();
-    let t0 = u.subst().apply(&Ty::var(TypeVarId(0)));
+    let t0 = u.subst().apply(&Ty::var(TypeVarId(0))).unwrap();
     assert_eq!(t0, Ty::int());
 }
 
@@ -64,8 +64,8 @@ fn unify_tuple_of_list_with_vars() {
     let a = Ty::tuple(vec![Ty::list(Ty::var(V(0))), Ty::int()]);
     let b = Ty::tuple(vec![Ty::list(Ty::bool_()), Ty::var(V(1))]);
     u.unify(&a, &b).unwrap();
-    assert_eq!(u.subst().apply(&Ty::var(V(0))), Ty::bool_());
-    assert_eq!(u.subst().apply(&Ty::var(V(1))), Ty::int());
+    assert_eq!(u.subst().apply(&Ty::var(V(0))).unwrap(), Ty::bool_());
+    assert_eq!(u.subst().apply(&Ty::var(V(1))).unwrap(), Ty::int());
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn test_never_unifies_with_var_binds_to_never() {
     let v = Ty::var(TypeVarId(0));
     u.unify(&Ty::Never, &v).unwrap();
     // The variable gets substituted to Never
-    assert_eq!(u.subst().apply(&v), Ty::Never);
+    assert_eq!(u.subst().apply(&v).unwrap(), Ty::Never);
 }
 
 /// Test that Never does NOT unify with complex types (soundness fix).
@@ -175,7 +175,7 @@ fn test_adt_with_type_vars() {
     u.unify(&opt1, &opt2).unwrap();
 
     // The variable should be bound to Int
-    assert_eq!(u.subst().apply(&v), Ty::int());
+    assert_eq!(u.subst().apply(&v).unwrap(), Ty::int());
 }
 
 /// Test that ADTs with different arg counts don't unify
@@ -231,5 +231,5 @@ fn test_adt_nested() {
     let nested1 = Ty::adt("Option", vec![Ty::adt("Option", vec![Ty::int()])]);
     let nested2 = Ty::adt("Option", vec![Ty::adt("Option", vec![v.clone()])]);
     u.unify(&nested1, &nested2).unwrap();
-    assert_eq!(u.subst().apply(&v), Ty::int());
+    assert_eq!(u.subst().apply(&v).unwrap(), Ty::int());
 }

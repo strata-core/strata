@@ -1,95 +1,201 @@
 //! Effect algebra for Strata.
 //!
-//! Internally this uses a `u64` bitmask. Up to 64 distinct effects
-//! can be modeled without reallocations.
+//! Internally this uses a `u64` bitmask for the concrete (known) effects.
+//! Up to 64 distinct effects can be modeled without reallocations.
+//!
+//! An `EffectRow` may be *closed* (no tail variable — all effects are known)
+//! or *open* (has a tail `EffectVarId` representing unknown additional effects).
+
+use std::fmt;
+
+/// Unique identifier for an effect-row variable (analogous to `TypeVarId`).
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct EffectVarId(pub u32);
+
+impl fmt::Debug for EffectVarId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "e{}", self.0)
+    }
+}
+
+impl fmt::Display for EffectVarId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "e{}", self.0)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Effect {
-    Io = 0,
-    Fs = 1,
-    Net = 2,
-    Time = 3,
-    Random = 4,
-    Ffi = 5,
-    Panic = 6,
-    Unwind = 7,
+    Fs = 0,
+    Net = 1,
+    Time = 2,
+    Rand = 3,
+    Ai = 4,
     // Add more as needed; keep < 64 without changing representation.
 }
 
 impl Effect {
     #[inline]
-    fn bit(self) -> u64 {
+    pub fn bit(self) -> u64 {
         1u64 << (self as u8)
     }
 }
 
-/// A small set of `Effect`s with subset/union ops.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+/// All known effects, in discriminant order.
+pub const ALL_EFFECTS: &[Effect] = &[
+    Effect::Fs,
+    Effect::Net,
+    Effect::Time,
+    Effect::Rand,
+    Effect::Ai,
+];
+
+/// A row of effects, optionally open (with a tail variable).
+///
+/// - Closed row: `{ Fs, Net }` — `concrete = 0b011, tail = None`
+/// - Open row: `{ Fs } ∪ e0` — `concrete = 0b001, tail = Some(EffectVarId(0))`
+/// - Pure (closed empty): `concrete = 0, tail = None`
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EffectRow {
-    mask: u64,
+    /// Bitmask of known-present effects.
+    pub concrete: u64,
+    /// If `Some`, this row is *open*: the tail variable may stand for more effects.
+    pub tail: Option<EffectVarId>,
+}
+
+impl fmt::Debug for EffectRow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self)
+    }
+}
+
+impl Default for EffectRow {
+    fn default() -> Self {
+        Self::pure()
+    }
 }
 
 impl EffectRow {
-    /// Empty set.
-    pub const fn empty() -> Self {
-        Self { mask: 0 }
+    // ---- Constructors ----
+
+    /// Empty, closed row (pure — no effects).
+    pub const fn pure() -> Self {
+        Self {
+            concrete: 0,
+            tail: None,
+        }
     }
 
-    /// Singleton set.
+    /// Closed row with the given bitmask.
+    pub const fn closed(mask: u64) -> Self {
+        Self {
+            concrete: mask,
+            tail: None,
+        }
+    }
+
+    /// Open row: known effects + a tail variable.
+    pub const fn open(concrete: u64, tail: EffectVarId) -> Self {
+        Self {
+            concrete,
+            tail: Some(tail),
+        }
+    }
+
+    /// Singleton closed row.
     pub const fn singleton(e: Effect) -> Self {
         Self {
-            mask: 1u64 << (e as u8),
+            concrete: 1u64 << (e as u8),
+            tail: None,
         }
     }
 
-    /// Does the row contain the given effect?
+    // ---- Queries ----
+
+    /// True if the row is closed (no tail variable).
     #[inline]
-    pub fn contains(&self, e: Effect) -> bool {
-        (self.mask & e.bit()) != 0
+    pub fn is_closed(&self) -> bool {
+        self.tail.is_none()
     }
 
-    /// Insert an effect (mutating).
-    #[inline]
-    pub fn insert(&mut self, e: Effect) {
-        self.mask |= e.bit();
-    }
-
-    /// Set union.
-    #[inline]
-    pub fn union(self, other: Self) -> Self {
-        Self {
-            mask: self.mask | other.mask,
-        }
-    }
-
-    /// Subset check: is `self` ⊆ `other`?
-    #[inline]
-    pub fn is_subset_of(&self, other: &Self) -> bool {
-        (self.mask | other.mask) == other.mask
-    }
-
-    /// True if set is empty.
+    /// True if the row is empty **and** closed.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.mask == 0
+        self.concrete == 0 && self.tail.is_none()
     }
 
-    /// Iterate effects present in this row.
+    /// Does the concrete part contain the given effect?
+    #[inline]
+    pub fn contains(&self, e: Effect) -> bool {
+        (self.concrete & e.bit()) != 0
+    }
+
+    /// Insert an effect into the concrete part (mutating).
+    #[inline]
+    pub fn insert(&mut self, e: Effect) {
+        self.concrete |= e.bit();
+    }
+
+    // ---- Algebra (closed rows only) ----
+
+    /// Set union of two **closed** rows.
+    ///
+    /// # Panics
+    /// Panics if either row has a tail (caller must resolve first).
+    pub fn union(self, other: Self) -> Self {
+        assert!(
+            self.is_closed() && other.is_closed(),
+            "EffectRow::union requires closed rows"
+        );
+        Self {
+            concrete: self.concrete | other.concrete,
+            tail: None,
+        }
+    }
+
+    /// Subset check for **closed** rows: is `self ⊆ other`?
+    ///
+    /// # Panics
+    /// Panics if either row has a tail.
+    pub fn is_subset_of(&self, other: &Self) -> bool {
+        assert!(
+            self.is_closed() && other.is_closed(),
+            "EffectRow::is_subset_of requires closed rows"
+        );
+        (self.concrete | other.concrete) == other.concrete
+    }
+
+    /// Iterate effects present in the concrete part.
     pub fn iter(&self) -> impl Iterator<Item = Effect> {
-        // Small static list is fine; there are < 64 possible slots.
-        const ALL: &[Effect] = &[
-            Effect::Io,
-            Effect::Fs,
-            Effect::Net,
-            Effect::Time,
-            Effect::Random,
-            Effect::Ffi,
-            Effect::Panic,
-            Effect::Unwind,
-        ];
-        let mask = self.mask;
-        ALL.iter().copied().filter(move |e| (mask & e.bit()) != 0)
+        let mask = self.concrete;
+        ALL_EFFECTS
+            .iter()
+            .copied()
+            .filter(move |e| (mask & e.bit()) != 0)
+    }
+}
+
+impl fmt::Display for EffectRow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{{")?;
+        let mut first = true;
+        for e in ALL_EFFECTS {
+            if (self.concrete & e.bit()) != 0 {
+                if !first {
+                    write!(f, ", ")?;
+                }
+                first = false;
+                write!(f, "{:?}", e)?;
+            }
+        }
+        if let Some(tail) = &self.tail {
+            if !first {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", tail)?;
+        }
+        write!(f, "}}")
     }
 }
 
@@ -99,32 +205,32 @@ mod tests {
 
     #[test]
     fn empty_subset() {
-        let a = EffectRow::empty();
-        let b = EffectRow::singleton(Effect::Io);
+        let a = EffectRow::pure();
+        let b = EffectRow::singleton(Effect::Fs);
         assert!(a.is_subset_of(&b));
         assert!(a.is_subset_of(&a));
     }
 
     #[test]
     fn union_and_contains() {
-        let a = EffectRow::singleton(Effect::Io);
+        let a = EffectRow::singleton(Effect::Fs);
         let b = EffectRow::singleton(Effect::Net);
         let u = a.union(b);
-        assert!(u.contains(Effect::Io));
+        assert!(u.contains(Effect::Fs));
         assert!(u.contains(Effect::Net));
-        assert!(!u.contains(Effect::Fs));
+        assert!(!u.contains(Effect::Time));
     }
 
     #[test]
     fn subset_logic() {
-        let mut a = EffectRow::empty();
-        a.insert(Effect::Io);
+        let mut a = EffectRow::pure();
         a.insert(Effect::Fs);
+        a.insert(Effect::Net);
 
-        let mut b = EffectRow::empty();
-        b.insert(Effect::Io);
+        let mut b = EffectRow::pure();
         b.insert(Effect::Fs);
         b.insert(Effect::Net);
+        b.insert(Effect::Time);
 
         assert!(a.is_subset_of(&b));
         assert!(!b.is_subset_of(&a));
@@ -132,12 +238,49 @@ mod tests {
 
     #[test]
     fn iter_lists_present_effects() {
-        let mut r = EffectRow::empty();
-        r.insert(Effect::Random);
+        let mut r = EffectRow::pure();
+        r.insert(Effect::Rand);
         r.insert(Effect::Time);
         let got = r.iter().collect::<Vec<_>>();
-        assert!(got.contains(&Effect::Random));
+        assert!(got.contains(&Effect::Rand));
         assert!(got.contains(&Effect::Time));
         assert_eq!(got.len(), 2);
+    }
+
+    #[test]
+    fn effect_var_id_display() {
+        assert_eq!(format!("{}", EffectVarId(0)), "e0");
+        assert_eq!(format!("{}", EffectVarId(42)), "e42");
+    }
+
+    #[test]
+    fn pure_is_empty_and_closed() {
+        let p = EffectRow::pure();
+        assert!(p.is_empty());
+        assert!(p.is_closed());
+    }
+
+    #[test]
+    fn open_row_is_not_closed() {
+        let o = EffectRow::open(0, EffectVarId(0));
+        assert!(!o.is_closed());
+        assert!(!o.is_empty());
+    }
+
+    #[test]
+    fn display_closed() {
+        let r = EffectRow::closed(Effect::Fs.bit() | Effect::Net.bit());
+        assert_eq!(format!("{}", r), "{Fs, Net}");
+    }
+
+    #[test]
+    fn display_open() {
+        let r = EffectRow::open(Effect::Fs.bit(), EffectVarId(3));
+        assert_eq!(format!("{}", r), "{Fs, e3}");
+    }
+
+    #[test]
+    fn display_pure() {
+        assert_eq!(format!("{}", EffectRow::pure()), "{}");
     }
 }

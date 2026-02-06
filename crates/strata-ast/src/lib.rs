@@ -24,6 +24,7 @@ pub mod ast {
         Fn(FnDecl),
         Struct(StructDef),
         Enum(EnumDef),
+        ExternFn(ExternFnDecl),
     }
 
     /// Struct definition: `struct Point<T> { x: T, y: T }`
@@ -74,7 +75,20 @@ pub mod ast {
         pub name: Ident,
         pub params: Vec<Param>,
         pub ret_ty: Option<TypeExpr>,
+        /// Effect annotation: `& { Fs, Net }`. None means unannotated (inferred).
+        pub effects: Option<Vec<Ident>>,
         pub body: Block,
+        pub span: Span,
+    }
+
+    /// Extern function declaration: `extern fn read(path: String) -> String & {Fs};`
+    #[derive(Debug, Serialize)]
+    pub struct ExternFnDecl {
+        pub name: Ident,
+        pub params: Vec<Param>,
+        pub ret_ty: Option<TypeExpr>,
+        /// Effect annotation: `& { Fs, Net }`. None means pure.
+        pub effects: Option<Vec<Ident>>,
         pub span: Span,
     }
 
@@ -103,10 +117,12 @@ pub mod ast {
     pub enum TypeExpr {
         /// Simple or qualified path: `Int`, `Option::Some`
         Path(Vec<Ident>, Span),
-        /// Function type: `fn(A, B) -> R`
+        /// Function type: `fn(A, B) -> R & {Fs, Net}`
         Arrow {
             params: Vec<TypeExpr>,
             ret: Box<TypeExpr>,
+            /// Effect annotation on function type. None means pure/unannotated.
+            effects: Option<Vec<Ident>>,
             span: Span,
         },
         /// Generic type application: `Option<T>`, `Result<T, E>`

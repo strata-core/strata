@@ -1,9 +1,9 @@
 # Strata - Implemented Features
 
-> Last updated: February 4, 2026
-> Status: Issues 001-007 complete (v0.0.8.0)
+> Last updated: February 5, 2026
+> Status: Issues 001-008 complete
 
-## ✅ Working Features (v0.0.8.0)
+## ✅ Working Features
 
 ### Parser & AST (Issue 001)
 
@@ -357,7 +357,91 @@ fn swap(pair: (Int, Int)) -> (Int, Int) {
 
 ---
 
-### CLI (Issue 001, updated through 007)
+### Effect System (Issue 008) ✨ NEW
+
+**Effect Annotations:**
+- Function effect declarations: `fn read(path: String) -> String & {Fs} { ... }`
+- Multiple effects: `fn both() -> () & {Fs, Net} { ... }`
+- Explicit pure: `fn add(x: Int, y: Int) -> Int & {} { x + y }`
+- Implicit pure: no annotation needed for pure functions
+- 5 built-in effects: `Fs`, `Net`, `Time`, `Rand`, `Ai`
+
+**Extern Functions:**
+- Declaration without body: `extern fn read_file(path: String) -> String & {Fs};`
+- Pure extern functions: `extern fn calc(x: Int) -> Int;`
+
+**Effect Inference:**
+- Unannotated functions infer their effects from the body
+- Call site effects propagate to enclosing function
+- Multiple effects accumulate across call sites
+- Transitive effect propagation (a calls b calls c)
+
+**Effect Checking:**
+- Body effects must be a subset of declared effects
+- Pure functions cannot call effectful functions
+- Unknown effect names produce compile-time errors
+- ADT constructors are always pure
+
+**Implementation:**
+- Bitmask-based EffectRow with open/closed rows
+- Remy-style row unification for effect variables
+- Two-phase constraint solver (type equality then effect subset)
+- Fixpoint accumulation for multi-call-site propagation
+- Effect variable generalization in polymorphic schemes
+
+**What Works:**
+```strata
+extern fn read_file(path: String) -> String & {Fs};
+extern fn fetch(url: String) -> String & {Net};
+
+// Pure function - no effects needed
+fn add(x: Int, y: Int) -> Int & {} { x + y }
+
+// Effectful function - must declare its effects
+fn download_and_save(url: String, path: String) -> () & {Fs, Net} {
+    let data = fetch(url);
+    read_file(path)
+}
+
+// Effects inferred when no annotation
+fn load(path: String) -> String {
+    read_file(path)
+}
+
+// Higher-order effect propagation
+fn apply(f, x) { f(x) }
+fn use_it() -> String & {Fs} { apply(read_file, "test.txt") }
+```
+
+**Error Messages:**
+- `Effect mismatch: expected {}, found {Fs}` — pure fn calls effectful fn
+- `Unknown effect 'Foo'; known effects are Fs, Net, Time, Rand, Ai`
+- Clear span information for all effect errors
+
+**DoS Protection:**
+| Limit | Value | Purpose |
+|-------|-------|---------|
+| Effect variables | 4,096 | Bound effect inference work |
+| Effect solver iterations | 64 | Prevent fixpoint divergence |
+
+**Example Files:**
+- `examples/effects_basic.strata` — Basic effectful functions and extern declarations
+- `examples/effects_hof.strata` — Higher-order functions with effect propagation
+
+**Location:**
+- `crates/strata-types/src/effects.rs` — Effect types and bitmask algebra
+- `crates/strata-types/src/infer/solver.rs` — Two-phase constraint solver
+- `crates/strata-types/src/infer/unifier.rs` — Remy-style row unification
+- `crates/strata-types/src/infer/constraint.rs` — Effect inference at call sites
+- `crates/strata-types/src/checker.rs` — Effect checking at function boundaries
+- `crates/strata-parse/src/parser.rs` — Effect annotation parsing
+- `crates/strata-ast/src/lib.rs` — ExternFnDecl and effect fields
+
+**Status:** Complete. Compile-time effect enforcement working.
+
+---
+
+### CLI (Issue 001, updated through 008)
 
 **Commands:**
 ```bash
@@ -404,8 +488,7 @@ strata-cli --eval file.strata
 - Pipe operator: `x |> f |> g`
 
 **From Later Issues:**
-- Effect enforcement (Issue 008) ← **NEXT**
-- Capability checking (Issue 009)
+- Capability checking (Issue 009) ← **NEXT**
 - Profile enforcement (Issue 010)
 - Actors & supervision
 - Datalog/logic engine
@@ -422,7 +505,7 @@ strata-cli --eval file.strata
 # Build all crates
 cargo build --workspace
 
-# Run all tests (292 tests)
+# Run all tests (339 tests)
 cargo test --workspace
 
 # Run with clippy (enforced in CI)
@@ -452,19 +535,19 @@ strata-ast       (no deps)
 
 ---
 
-## Project Stats (v0.0.8.0)
+## Project Stats
 
 - **Crates:** 4 (ast, parse, types, cli)
-- **Total Tests:** 292 (parser: 38, types: 161, cli: 26, others: 67)
-- **Lines of Code:** ~7500+ (estimate)
-- **Issues Completed:** 7 + hardening (Parser, Effects, Type Scaffolding, Basic Type Checking, Functions, Blocks, ADTs, Security Hardening)
-- **Example Files:** 28+
+- **Total Tests:** 344 (parser: 48, types: 168, cli: 26, effects: 34, others: 68)
+- **Lines of Code:** ~8500+ (estimate)
+- **Issues Completed:** 8 + hardening (Parser, Effects, Type Scaffolding, Basic Type Checking, Functions, Blocks, ADTs, Security Hardening, Effect System)
+- **Example Files:** 30+
 
 ---
 
 ## Next Up
 
-**Issue 008: Effect Enforcement**
-- Effect annotations on functions
-- Effect propagation through calls
-- Effect checking at compile time
+**Issue 009: Capability Types**
+- Capability-based security model
+- Linear capability tracking
+- Profile enforcement

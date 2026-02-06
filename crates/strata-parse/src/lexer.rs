@@ -194,7 +194,8 @@ impl<'a> Lexer<'a> {
             '=' => Some(TokKind::Eq),
             '<' => Some(TokKind::Lt),
             '>' => Some(TokKind::Gt),
-            '!' => Some(TokKind::Bang), // <-- single '!'
+            '!' => Some(TokKind::Bang),      // <-- single '!'
+            '&' => Some(TokKind::Ampersand), // single '&' for effect annotations
             _ => None,
         };
         if let Some(k) = single {
@@ -299,6 +300,7 @@ impl<'a> Lexer<'a> {
                 "match" => TokKind::KwMatch,
                 "enum" => TokKind::KwEnum,
                 "struct" => TokKind::KwStruct,
+                "extern" => TokKind::KwExtern,
                 _ => TokKind::Ident(s),
             };
             return Tok {

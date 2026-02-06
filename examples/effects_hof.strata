@@ -1,0 +1,19 @@
+// effects_hof.strata - Higher-order functions with effect propagation
+//
+// When a higher-order function calls a function parameter,
+// the callee's effects flow through to the caller.
+
+extern fn log(msg: String) -> () & {Fs};
+
+// apply calls f, so whatever effects f has propagate through
+fn apply(f, x) { f(x) }
+
+// Using apply with an effectful function
+fn use_log() -> () & {Fs} {
+    apply(log, "hello from apply")
+}
+
+// Pure higher-order function with pure callback
+fn double(f, x: Int) -> Int { f(x) + f(x) }
+fn inc(x: Int) -> Int { x + 1 }
+let result = double(inc, 5);

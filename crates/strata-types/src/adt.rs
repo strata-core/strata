@@ -235,7 +235,7 @@ pub fn contains_capability(ty: &Ty) -> bool {
     match ty {
         Ty::Const(_) | Ty::Var(_) | Ty::Never => false,
         Ty::Adt { name, args } => is_capability_type(name) || args.iter().any(contains_capability),
-        Ty::Arrow(params, ret) => {
+        Ty::Arrow(params, ret, _eff) => {
             params.iter().any(contains_capability) || contains_capability(ret)
         }
         Ty::Tuple(tys) => tys.iter().any(contains_capability),
@@ -254,7 +254,7 @@ pub fn find_capability_name(ty: &Ty) -> Option<String> {
                 args.iter().find_map(find_capability_name)
             }
         }
-        Ty::Arrow(params, ret) => params
+        Ty::Arrow(params, ret, _eff) => params
             .iter()
             .find_map(find_capability_name)
             .or_else(|| find_capability_name(ret)),

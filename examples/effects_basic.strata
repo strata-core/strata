@@ -1,0 +1,29 @@
+// effects_basic.strata - Basic effect system examples
+//
+// Effects track what side effects a function may perform.
+// Strata enforces these at compile time.
+
+// Extern functions declare their effects
+extern fn read_file(path: String) -> String & {Fs};
+extern fn write_file(path: String, data: String) -> () & {Fs};
+extern fn fetch(url: String) -> String & {Net};
+
+// Pure functions have no effects (& {} or no annotation)
+fn add(x: Int, y: Int) -> Int & {} { x + y }
+
+// Functions that call effectful functions must declare those effects
+fn copy_file(src: String, dst: String) -> () & {Fs} {
+    let data = read_file(src);
+    write_file(dst, data)
+}
+
+// Multiple effects accumulate
+fn download_and_save(url: String, path: String) -> () & {Fs, Net} {
+    let data = fetch(url);
+    write_file(path, data)
+}
+
+// Unannotated functions infer their effects
+fn load(path: String) -> String {
+    read_file(path)
+}
