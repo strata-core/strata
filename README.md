@@ -1,6 +1,6 @@
 # Strata — Layered Safety by Design
 
-> **Status:** v0.0.8 — Effect System complete
+> **Status:** v0.0.9 — Capability Types complete
 > **License:** MIT
 > **Language:** Rust
 
@@ -162,10 +162,14 @@ fn ai_agent(
 - CLI with automatic type checking
 - **Compile-time effect system** with 5 built-in effects (Fs, Net, Time, Rand, Ai)
 - Effect annotations: `fn f() -> Int & {Fs, Net} { ... }`
-- Extern function declarations: `extern fn read(path: String) -> String & {Fs};`
+- Extern function declarations: `extern fn read(path: String, fs: FsCap) -> String & {Fs};`
 - Effect inference for unannotated functions
 - Higher-order effect propagation
-- **354 comprehensive tests** (all passing)
+- **Capability types** — `FsCap`, `NetCap`, `TimeCap`, `RandCap`, `AiCap`
+- Mandatory capability validation: effect `{X}` requires `XCap` in scope
+- No ambient authority — capabilities must be explicitly passed
+- Reserved capability name protection (ADTs cannot shadow capability types)
+- **398 comprehensive tests** (all passing)
 
 ✅ **Security Hardening:**
 - DoS protection: source size (1MB), token count (200K), parser nesting (512), inference depth (512), eval call depth (1000), effect vars (4096)
@@ -175,7 +179,7 @@ fn ai_agent(
 - Parser depth guards balanced on all error paths
 
 📋 **Next Up:**
-- Issue 009-010: Capabilities, affine types
+- Issue 010: Affine types (linear capabilities)
 - Issue 011: WASM runtime + effect traces + deterministic replay
 
 **Target v0.1:** November 2026 - February 2027
@@ -195,7 +199,7 @@ cargo build --workspace
 # Run an example
 cargo run -p strata-cli -- examples/add.strata
 
-# Run tests (354 tests)
+# Run tests (398 tests)
 cargo test --workspace
 ```
 
@@ -256,20 +260,26 @@ let p = Point { x: a, y: b };
 
 ```strata
 // Effect system - compile-time side effect tracking
-extern fn read_file(path: String) -> String & {Fs};
-extern fn fetch(url: String) -> String & {Net};
+extern fn read_file(path: String, fs: FsCap) -> String & {Fs};
+extern fn fetch(url: String, net: NetCap) -> String & {Net};
 
-// Must declare effects used in the body
-fn download_and_save(url: String, path: String) -> () & {Fs, Net} {
-    let data = fetch(url);
-    read_file(path)
+// Capabilities gate effect usage — no FsCap, no {Fs} effects
+fn load_config(fs: FsCap, path: String) -> String & {Fs} {
+    read_file(path, fs)
 }
 
-// Pure functions — no annotation needed (or use & {} to be explicit)
+// Multiple capabilities for multiple effects
+fn download_and_save(fs: FsCap, net: NetCap, url: String, path: String) -> () & {Fs, Net} {
+    let data = fetch(url, net);
+    write_file(path, data, fs)
+}
+
+// Pure functions need no capabilities or annotations
 fn add(x: Int, y: Int) -> Int { x + y }
 ```
 
 **Built-in effects:** `Fs` (filesystem), `Net` (network), `Time` (clock), `Rand` (randomness), `Ai` (model calls)
+**Capability types:** `FsCap`, `NetCap`, `TimeCap`, `RandCap`, `AiCap` — each gates its corresponding effect
 
 ---
 
@@ -295,7 +305,7 @@ cargo fmt
 
 **Phase 1 (Complete):** Parser, AST, basic type checking ✅  
 **Phase 2 (Complete):** Functions ✅, hardening ✅, blocks ✅, ADTs ✅  
-**Phase 3 (Current):** Effect system ✅, capabilities, affine types  
+**Phase 3 (Current):** Effect system ✅, capabilities ✅, affine types
 **Phase 4:** Runtime, stdlib, WASM compilation, replay  
 **Phase 5:** Tooling, docs, killer demos, v0.1 launch  
 
