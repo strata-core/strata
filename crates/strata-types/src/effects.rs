@@ -10,6 +10,7 @@ use std::fmt;
 
 /// Unique identifier for an effect-row variable (analogous to `TypeVarId`).
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EffectVarId(pub u32);
 
 impl fmt::Debug for EffectVarId {
@@ -57,6 +58,7 @@ pub const ALL_EFFECTS: &[Effect] = &[
 /// - Open row: `{ Fs } ∪ e0` — `concrete = 0b001, tail = Some(EffectVarId(0))`
 /// - Pure (closed empty): `concrete = 0, tail = None`
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EffectRow {
     /// Bitmask of known-present effects.
     pub concrete: u64,
