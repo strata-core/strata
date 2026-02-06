@@ -16,7 +16,7 @@ use strata_ast::ast::{BinOp, Block, Expr, FieldInit, Lit, MatchArm, Pat, Path, S
 use strata_ast::span::Span;
 
 /// Maximum inference depth to prevent stack overflow from pathological input
-const MAX_INFER_DEPTH: u32 = 512;
+const MAX_INFER_DEPTH: u32 = 128;
 
 /// Maximum number of effect variables per module (DoS protection)
 const MAX_EFFECT_VARS: u32 = 4096;
@@ -1462,9 +1462,10 @@ mod tests {
         let mut ctx = InferCtx::new();
         let env = HashMap::new();
 
-        // Create a deeply nested unary expression: !!!!!...!true (600 levels)
+        // Create a deeply nested unary expression: !!!!!...!true (200 levels)
+        // Must exceed MAX_INFER_DEPTH (128) but stay small enough for CI stacks
         let mut expr = Expr::Lit(Lit::Bool(true), Span { start: 0, end: 4 });
-        for i in 0..600 {
+        for i in 0..200 {
             expr = Expr::Unary {
                 op: strata_ast::ast::UnOp::Not,
                 expr: Box::new(expr),
