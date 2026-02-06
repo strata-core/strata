@@ -58,6 +58,7 @@ pub const ALL_EFFECTS: &[Effect] = &[
 /// A function that performs a concrete effect must have the corresponding
 /// capability type in its parameter list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CapKind {
     Fs,
     Net,
