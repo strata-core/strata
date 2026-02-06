@@ -51,7 +51,7 @@
 - Diagnostics could be more polished (span formatting)
 - Capability provisioning (how `main` gets capabilities from runtime) deferred to Issue 011
 
-**Test stats:** 398 tests passing (44 new, 11% increase)
+**Test stats:** 402 tests passing (44 new, 11% increase)
 
 **Example:**
 ```strata
@@ -163,7 +163,7 @@ fn load_config(fs: FsCap, path: String) -> String & {Fs} {
 **Codebase:**
 - 4 crates (strata-ast, strata-parse, strata-types, strata-cli)
 - ~9,000+ lines of Rust code
-- 398 tests (all passing)
+- 402 tests (all passing)
 - 0 clippy warnings (enforced)
 
 **Velocity:**

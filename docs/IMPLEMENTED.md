@@ -38,7 +38,7 @@
 ### Effects & Profiles (Issue 002)
 
 **Effects:**
-- Effect enum: `Net`, `FS`, `Time`, `Rand`, `Fail`
+- Effect enum: `Fs`, `Net`, `Time`, `Rand`, `Ai`
 - EffectRow as canonical set
 - Set operations: `is_subset_of()`, `union()`
 
@@ -328,7 +328,7 @@ fn swap(pair: (Int, Int)) -> (Int, Int) {
 
 **Capability Check on Bindings (Code Review Fix):**
 - Top-level let bindings checked for capability types after constraint solving
-- Block-level let bindings: best-effort check (types may be unsolved; full coverage in Issue 008)
+- Block-level let bindings: best-effort check (types may be unsolved; post-solving validation in Issues 008-009 catches most cases)
 - `check_let()` now uses `CheckContext` with ADT registry (fixes struct expressions in top-level lets)
 
 ### Known Limitations (v0.1)
@@ -336,8 +336,8 @@ fn swap(pair: (Int, Int)) -> (Int, Int) {
 - **Exhaustiveness deferred on unresolved types:** When the scrutinee has unresolved type variables (e.g., matching on a freshly constructed value without type annotation), exhaustiveness checking is skipped. Workaround: annotate the type or bind to a variable first.
 - **Nested enum patterns:** Complex nested patterns may not report exhaustiveness correctly in all cases.
 - **Generic type annotations in let bindings:** `let x: Result<Int, String> = ...` not yet supported. Workaround: rely on type inference.
-- **Capability binding semantics:** `let x = cap;` (bare rebinding) is currently rejected alongside container storage. Will be refined when capability system lands in Issue 008/009. Conservative default is intentional.
-- **Block-level capability check is best-effort:** When types contain unresolved inference variables inside a function body, the capability check may not trigger until the effect system provides post-solving analysis (Issue 008).
+- **Capability binding semantics:** `let x = cap;` (bare rebinding) is rejected alongside container storage. Capabilities must be passed as function parameters, not stored in variables. This is intentional — Issue 010 (affine types) will formalize move semantics.
+- **Block-level capability check is best-effort:** When types contain unresolved inference variables inside a function body, the capability check may not trigger. Post-solving validation (Issues 008-009) catches most cases.
 
 **Example Files:**
 - `examples/option.strata` - Option enum with unwrap_or, is_some, map_option
@@ -367,7 +367,7 @@ fn swap(pair: (Int, Int)) -> (Int, Int) {
 - 5 built-in effects: `Fs`, `Net`, `Time`, `Rand`, `Ai`
 
 **Extern Functions:**
-- Declaration without body: `extern fn read_file(path: String) -> String & {Fs};`
+- Declaration without body: `extern fn read_file(path: String, fs: FsCap) -> String & {Fs};`
 - Pure extern functions: `extern fn calc(x: Int) -> Int;`
 
 **Effect Inference:**
@@ -391,26 +391,27 @@ fn swap(pair: (Int, Int)) -> (Int, Int) {
 
 **What Works:**
 ```strata
-extern fn read_file(path: String) -> String & {Fs};
-extern fn fetch(url: String) -> String & {Net};
+extern fn read_file(path: String, fs: FsCap) -> String & {Fs};
+extern fn fetch(url: String, net: NetCap) -> String & {Net};
 
 // Pure function - no effects needed
 fn add(x: Int, y: Int) -> Int & {} { x + y }
 
-// Effectful function - must declare its effects
-fn download_and_save(url: String, path: String) -> () & {Fs, Net} {
-    let data = fetch(url);
-    read_file(path)
+// Effectful function - must declare its effects and have matching caps
+fn download_and_save(fs: FsCap, net: NetCap, url: String, path: String) -> () & {Fs, Net} {
+    let data = fetch(url, net);
+    read_file(path, fs)
 }
 
 // Effects inferred when no annotation
-fn load(path: String) -> String {
-    read_file(path)
+fn load(fs: FsCap, path: String) -> String {
+    read_file(path, fs)
 }
 
 // Higher-order effect propagation
-fn apply(f, x) { f(x) }
-fn use_it() -> String & {Fs} { apply(read_file, "test.txt") }
+extern fn single_read(path: String, fs: FsCap) -> String & {Fs};
+fn apply2(f, x, y) { f(x, y) }
+fn use_it(fs: FsCap) -> String & {Fs} { apply2(single_read, "test.txt", fs) }
 ```
 
 **Error Messages:**
@@ -445,7 +446,7 @@ fn use_it() -> String & {Fs} { apply(read_file, "test.txt") }
 
 **Completed:** February 6-7, 2026
 **Duration:** 1 week
-**Test Coverage:** 398 tests (44 new)
+**Test Coverage:** 402 tests (48 new)
 
 **What was implemented:**
 
@@ -603,7 +604,7 @@ strata-cli --eval file.strata
 # Build all crates
 cargo build --workspace
 
-# Run all tests (398 tests)
+# Run all tests (402 tests)
 cargo test --workspace
 
 # Run with clippy (enforced in CI)
@@ -636,7 +637,7 @@ strata-ast       (no deps)
 ## Project Stats
 
 - **Crates:** 4 (ast, parse, types, cli)
-- **Total Tests:** 398 (parser: 48, types: 174, cli: 26, effects: 41, capabilities: 42, others: 67)
+- **Total Tests:** 402 (parser: 48, types: 174, cli: 26, effects: 41, capabilities: 46, others: 67)
 - **Lines of Code:** ~9000+ (estimate)
 - **Issues Completed:** 9 + hardening (Parser, Effects, Type Scaffolding, Basic Type Checking, Functions, Blocks, ADTs, Security Hardening, Effect System, Capability Types)
 - **Example Files:** 30+

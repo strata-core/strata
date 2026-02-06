@@ -169,7 +169,7 @@ fn ai_agent(
 - Mandatory capability validation: effect `{X}` requires `XCap` in scope
 - No ambient authority — capabilities must be explicitly passed
 - Reserved capability name protection (ADTs cannot shadow capability types)
-- **398 comprehensive tests** (all passing)
+- **402 comprehensive tests** (all passing)
 
 ✅ **Security Hardening:**
 - DoS protection: source size (1MB), token count (200K), parser nesting (512), inference depth (512), eval call depth (1000), effect vars (4096)
@@ -199,7 +199,7 @@ cargo build --workspace
 # Run an example
 cargo run -p strata-cli -- examples/add.strata
 
-# Run tests (398 tests)
+# Run tests (402 tests)
 cargo test --workspace
 ```
 
@@ -289,7 +289,7 @@ fn add(x: Int, y: Int) -> Int { x + y }
 # Build everything
 cargo build --workspace
 
-# Run all tests (354 tests)
+# Run all tests (402 tests)
 cargo test --workspace
 
 # Run clippy (enforced in CI)

@@ -138,7 +138,7 @@ See [`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md) for complete design philosophy 
 - 13+ parser tests
 
 ### Issue 002: Effects & Profiles ✅
-- Effect enum: Net, FS, Time, Rand, Fail
+- Effect enum: Fs, Net, Time, Rand, Ai
 - EffectRow as canonical set
 - Profile enum: Kernel, Realtime, General
 - Set operations for effects
@@ -324,17 +324,17 @@ fn add(x: Int, y: Int) -> Int & {} {
     x + y
 }
 
-// Effectful functions
-extern fn read_file(path: String) -> String & {Fs};
-extern fn fetch(url: String) -> String & {Net};
+// Effectful functions — capabilities required (Issue 009)
+extern fn read_file(path: String, fs: FsCap) -> String & {Fs};
+extern fn fetch(url: String, net: NetCap) -> String & {Net};
 
-fn download_and_save(url: String, path: String) -> () & {Fs, Net} {
-    let data = fetch(url);
-    read_file(path)
+fn download_and_save(fs: FsCap, net: NetCap, url: String, path: String) -> () & {Fs, Net} {
+    let data = fetch(url, net);
+    read_file(path, fs)
 }
 ```
 
-**Test stats:** 354 tests (all passing)
+**Test stats:** 354 tests at Issue 008 completion (402 total after Issue 009 hardening)
 
 **External validation:**
 > "You are solving the 'Laundering' problem correctly. 90% of effect systems fail because they allow effects to be laundered through higher-order functions or ADTs. Your test `adversarial_generic_adt_preserves_effects_through_type_param` proves your unifier is sophisticated. Many junior language designers miss this. You didn't."
@@ -343,7 +343,7 @@ fn download_and_save(url: String, path: String) -> () & {Fs, Net} {
 **Status:** COMPLETE (Feb 6-7, 2026)
 **Phase:** 3 (Effect System)
 **Duration:** 1 week
-**Tests:** 398 (44 new, 11% increase)
+**Tests:** 402 (48 new, 14% increase)
 
 **What was built:**
 - Five capability types: `FsCap`, `NetCap`, `TimeCap`, `RandCap`, `AiCap`
@@ -636,7 +636,7 @@ These features are important but not required for v0.1:
   - Estimated: 5-7 days
   - Enables dynamic authority slicing
 - **DSU Solver Rewrite** (Union-Find + worklist for scale)
-- **Row polymorphism** (effect variables: `fn f<E>() -> T & E`)
+- **User-facing effect type variables** (explicit `fn f<E>() -> T & E` syntax — row polymorphism exists internally via Remy-style rows, but is not yet user-accessible)
 - **Actors & supervision** (concurrency model)
 - **Async/await syntax** (concurrency primitives)
 - **Ownership/borrow checking** (memory safety beyond arenas)
@@ -710,7 +710,7 @@ These features are important but not required for v0.1:
 - Issue 011: WASM Runtime + Effect Traces (3-4 weeks)
 
 **Project Stats:**
-- 398 tests (all passing)
+- 402 tests (all passing)
 - 4 crates (ast, parse, types, cli)
 - ~9,000+ lines of Rust
 - 0 clippy warnings (enforced)
