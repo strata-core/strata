@@ -12,7 +12,10 @@ use strata_ast::ast::{
 };
 use strata_types::CapKind;
 
-use crate::host::{ExternFnMeta, HostRegistry, ParamKind, TraceEmitter};
+use crate::host::{
+    serialize_value, ExternFnMeta, HostRegistry, ParamKind, ReplayError, TraceEmitter,
+    TraceReplayer,
+};
 
 /// Maximum call depth to prevent stack overflow from deep recursion
 const MAX_CALL_DEPTH: u32 = 1000;
@@ -160,6 +163,7 @@ pub struct Env {
     scopes: Vec<HashMap<String, Binding>>,
     host_registry: Option<Arc<HostRegistry>>,
     tracer: Option<Arc<Mutex<TraceEmitter>>>,
+    replayer: Option<Arc<Mutex<TraceReplayer>>>,
 }
 
 impl Default for Env {
@@ -168,6 +172,7 @@ impl Default for Env {
             scopes: vec![HashMap::new()],
             host_registry: None,
             tracer: None,
+            replayer: None,
         }
     }
 }
@@ -184,12 +189,19 @@ impl Env {
             scopes: vec![HashMap::new()],
             host_registry: Some(registry),
             tracer: None,
+            replayer: None,
         }
     }
 
     /// Attach a trace emitter to this environment.
     pub fn with_tracer(mut self, tracer: Arc<Mutex<TraceEmitter>>) -> Self {
         self.tracer = Some(tracer);
+        self
+    }
+
+    /// Attach a trace replayer to this environment.
+    pub fn with_replayer(mut self, replayer: Arc<Mutex<TraceReplayer>>) -> Self {
+        self.replayer = Some(replayer);
         self
     }
 
@@ -537,6 +549,178 @@ fn extract_cap_info(ty: &strata_ast::ast::TypeExpr) -> (bool, Option<String>) {
         }
         _ => (false, None),
     }
+}
+
+/// Run a module in replay mode, substituting recorded trace outputs
+/// instead of calling real host functions.
+pub fn run_module_replay(m: &Module, trace_jsonl: &str) -> Result<Value> {
+    use strata_ast::ast::Item;
+
+    let replayer = TraceReplayer::from_jsonl(trace_jsonl)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let replayer = Arc::new(Mutex::new(replayer));
+
+    // We still need a registry for ExternFnMeta (position-aware input building),
+    // but we won't call any real host functions.
+    let mut registry = HostRegistry::new();
+    for item in &m.items {
+        if let Item::ExternFn(decl) = item {
+            let mut params = Vec::new();
+            for param in &decl.params {
+                if let Some(ty_expr) = &param.ty {
+                    let (is_ref, cap_name) = extract_cap_info(ty_expr);
+                    if let Some(name) = cap_name {
+                        if let Some(kind) = CapKind::from_name(&name) {
+                            params.push(ParamKind::Cap {
+                                kind,
+                                borrowed: is_ref,
+                            });
+                            continue;
+                        }
+                    }
+                }
+                params.push(ParamKind::Data {
+                    name: param.name.text.clone(),
+                });
+            }
+            registry.register_extern_meta(&decl.name.text, ExternFnMeta { params });
+        }
+    }
+    let registry = Arc::new(registry);
+
+    let mut env = Env::with_host_registry(registry).with_replayer(replayer.clone());
+
+    // Register extern fns as host function references
+    for item in &m.items {
+        if let Item::ExternFn(decl) = item {
+            env.define(
+                decl.name.text.clone(),
+                Value::HostFn(decl.name.text.clone()),
+                false,
+            );
+        }
+    }
+
+    // Collect and register Strata function declarations
+    let fn_decls: Vec<_> = m
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let Item::Fn(decl) = item {
+                Some(decl)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    for decl in &fn_decls {
+        env.define(decl.name.text.clone(), Value::Unit, true);
+    }
+    for decl in &fn_decls {
+        let closure = Value::Closure {
+            params: decl.params.iter().map(|p| p.name.text.clone()).collect(),
+            body: decl.body.clone(),
+            env: env.clone(),
+        };
+        env.set(&decl.name.text, closure).ok();
+    }
+    for decl in &fn_decls {
+        let closure = Value::Closure {
+            params: decl.params.iter().map(|p| p.name.text.clone()).collect(),
+            body: decl.body.clone(),
+            env: env.clone(),
+        };
+        env.set(&decl.name.text, closure).ok();
+    }
+
+    for item in &m.items {
+        if let Item::Let(ld) = item {
+            let cf = eval_expr(&mut env, &ld.value)?;
+            let v = cf.into_value();
+            env.define(ld.name.text.clone(), v, false);
+        }
+    }
+
+    // Find and call main()
+    let main_decl = m.items.iter().find_map(|item| {
+        if let Item::Fn(decl) = item {
+            if decl.name.text == "main" {
+                Some(decl)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    });
+
+    let main_decl = match main_decl {
+        Some(d) => d,
+        None => return Ok(Value::Unit),
+    };
+
+    let mut cap_args: Vec<Value> = Vec::new();
+    for param in &main_decl.params {
+        if let Some(ty_expr) = &param.ty {
+            if let Some(name) = extract_cap_type_name(ty_expr) {
+                if let Some(kind) = CapKind::from_name(&name) {
+                    cap_args.push(Value::Cap(kind));
+                }
+            }
+        }
+    }
+
+    let main_val = env
+        .get("main")
+        .ok_or_else(|| anyhow::anyhow!("main function not found"))?
+        .clone();
+
+    let result = if let Value::Closure {
+        params,
+        body,
+        env: closure_env,
+    } = main_val
+    {
+        let mut call_env = closure_env;
+        call_env.push_scope();
+        for (param, value) in params.iter().zip(cap_args) {
+            call_env.define(param.clone(), value, false);
+        }
+        let result = eval_block(&mut call_env, &body)?;
+        call_env.pop_scope()?;
+        result.into_value()
+    } else {
+        bail!("main is not a function")
+    };
+
+    // Verify all trace entries were consumed
+    let r = replayer.lock().unwrap();
+    r.verify_complete().map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    Ok(result)
+}
+
+/// Build the inputs JSON object for replay matching, using ExternFnMeta
+/// to identify data params by position.
+fn build_replay_inputs(env: &Env, name: &str, all_args: &[Value]) -> serde_json::Value {
+    if let Some(registry) = &env.host_registry {
+        if let Some(meta) = registry.get_extern_meta(name) {
+            let mut inputs = serde_json::Map::new();
+            for (i, param) in meta.params.iter().enumerate() {
+                if let ParamKind::Data { name } = param {
+                    if let Some(val) = all_args.get(i) {
+                        inputs.insert(
+                            name.clone(),
+                            serde_json::Value::String(serialize_value(val)),
+                        );
+                    }
+                }
+            }
+            return serde_json::Value::Object(inputs);
+        }
+    }
+    serde_json::Value::Object(serde_json::Map::new())
 }
 
 /// Evaluate an expression
@@ -968,6 +1152,20 @@ fn eval_call_inner(env: &mut Env, callee: &Expr, args: &[Expr]) -> Result<Contro
             arg_values.push(cf.into_value());
         }
 
+        // Replay mode: substitute outputs from recorded trace
+        if let Some(replayer) = &env.replayer {
+            let inputs = build_replay_inputs(env, name, &arg_values);
+            let mut r = replayer.lock().unwrap();
+            match r.next(name, &inputs) {
+                Ok(val) => return Ok(ControlFlow::Value(val)),
+                Err(ReplayError::ReplayedError(msg)) => {
+                    bail!("host function '{}': {}", name, msg)
+                }
+                Err(e) => bail!("{}", e),
+            }
+        }
+
+        // Live mode: dispatch to real host function
         let registry = env
             .host_registry
             .as_ref()

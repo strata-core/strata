@@ -4,7 +4,7 @@
 //! that dispatch to real Rust host implementations, with capability
 //! injection at the main() entry point and structured trace emission.
 
-use strata_cli::eval::{run_module, run_module_traced, Value};
+use strata_cli::eval::{run_module, run_module_replay, run_module_traced, Value};
 
 use std::sync::{Arc, Mutex};
 
@@ -466,4 +466,296 @@ fn trace_disabled_no_output() {
     assert!(matches!(result, Value::Str(_)));
     // No way to check "no output" here beyond verifying it didn't crash.
     // The real check: run_module doesn't use a tracer at all.
+}
+
+// =========================================================================
+// Phase 4: Deterministic replay tests
+// =========================================================================
+
+/// Helper: run a program traced, then replay the trace with the same program.
+fn trace_and_replay(src: &str) -> (Value, Value) {
+    let module = strata_parse::parse_str("<test>", src).expect("parse failed");
+    let mut tc = strata_types::TypeChecker::new();
+    tc.check_module(&module).expect("type check failed");
+
+    let buf = SharedBuf::new();
+    let writer = buf.clone();
+    let live_result = run_module_traced(&module, Box::new(writer)).expect("live run failed");
+
+    let trace = buf.contents();
+    let replay_result = run_module_replay(&module, &trace).expect("replay failed");
+
+    (live_result, replay_result)
+}
+
+#[test]
+fn replay_produces_same_result() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let file_path = dir.path().join("replay_ok.txt");
+    std::fs::write(&file_path, "replay content").expect("write test file");
+    let path_str = file_path.to_str().unwrap();
+
+    let src = format!(
+        r#"
+        extern fn read_file(fs: &FsCap, path: String) -> String & {{Fs}};
+
+        fn main(fs: FsCap) -> String & {{Fs}} {{
+            read_file(&fs, "{}")
+        }}
+        "#,
+        path_str
+    );
+
+    let (live, replay) = trace_and_replay(&src);
+    match (&live, &replay) {
+        (Value::Str(a), Value::Str(b)) => assert_eq!(a, b),
+        _ => panic!("expected matching Str values, got live={}, replay={}", live, replay),
+    }
+}
+
+#[test]
+fn replay_detects_input_mismatch() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let file1 = dir.path().join("input_match.txt");
+    std::fs::write(&file1, "data").expect("write");
+    let path1 = file1.to_str().unwrap();
+
+    // Record a trace reading file1
+    let src_live = format!(
+        r#"
+        extern fn read_file(fs: &FsCap, path: String) -> String & {{Fs}};
+
+        fn main(fs: FsCap) -> String & {{Fs}} {{
+            read_file(&fs, "{}")
+        }}
+        "#,
+        path1
+    );
+
+    let module_live = strata_parse::parse_str("<test>", &src_live).expect("parse");
+    let mut tc = strata_types::TypeChecker::new();
+    tc.check_module(&module_live).expect("typecheck");
+    let buf = SharedBuf::new();
+    let writer = buf.clone();
+    let _ = run_module_traced(&module_live, Box::new(writer)).expect("live run");
+    let trace = buf.contents();
+
+    // Replay with a different path
+    let src_replay = r#"
+        extern fn read_file(fs: &FsCap, path: String) -> String & {Fs};
+
+        fn main(fs: FsCap) -> String & {Fs} {
+            read_file(&fs, "/different/path.txt")
+        }
+    "#;
+
+    let module_replay = strata_parse::parse_str("<test>", src_replay).expect("parse");
+    let mut tc2 = strata_types::TypeChecker::new();
+    tc2.check_module(&module_replay).expect("typecheck");
+    let err = run_module_replay(&module_replay, &trace).unwrap_err().to_string();
+    assert!(
+        err.contains("input mismatch"),
+        "expected input mismatch error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn replay_detects_operation_mismatch() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let file1 = dir.path().join("op_match.txt");
+    std::fs::write(&file1, "data").expect("write");
+    let path1 = file1.to_str().unwrap();
+
+    // Record a trace with read_file
+    let src_live = format!(
+        r#"
+        extern fn read_file(fs: &FsCap, path: String) -> String & {{Fs}};
+
+        fn main(fs: FsCap) -> String & {{Fs}} {{
+            read_file(&fs, "{}")
+        }}
+        "#,
+        path1
+    );
+
+    let module_live = strata_parse::parse_str("<test>", &src_live).expect("parse");
+    let mut tc = strata_types::TypeChecker::new();
+    tc.check_module(&module_live).expect("typecheck");
+    let buf = SharedBuf::new();
+    let writer = buf.clone();
+    let _ = run_module_traced(&module_live, Box::new(writer)).expect("live run");
+    let trace = buf.contents();
+
+    // Replay with write_file instead
+    let src_replay = format!(
+        r#"
+        extern fn write_file(fs: &FsCap, path: String, content: String) -> () & {{Fs}};
+
+        fn main(fs: FsCap) -> () & {{Fs}} {{
+            write_file(&fs, "{}", "new content")
+        }}
+        "#,
+        path1
+    );
+
+    let module_replay = strata_parse::parse_str("<test>", &src_replay).expect("parse");
+    let mut tc2 = strata_types::TypeChecker::new();
+    tc2.check_module(&module_replay).expect("typecheck");
+    let err = run_module_replay(&module_replay, &trace).unwrap_err().to_string();
+    assert!(
+        err.contains("operation mismatch"),
+        "expected operation mismatch error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn replay_detects_extra_effects() {
+    // Trace has 2 calls, program makes 1 → UnreplayedEffects
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let file1 = dir.path().join("extra1.txt");
+    let file2 = dir.path().join("extra2.txt");
+    std::fs::write(&file1, "one").expect("write");
+    std::fs::write(&file2, "two").expect("write");
+    let path1 = file1.to_str().unwrap();
+    let path2 = file2.to_str().unwrap();
+
+    // Record trace with 2 reads
+    let src_live = format!(
+        r#"
+        extern fn read_file(fs: &FsCap, path: String) -> String & {{Fs}};
+
+        fn main(fs: FsCap) -> String & {{Fs}} {{
+            let _a = read_file(&fs, "{p1}");
+            read_file(&fs, "{p2}")
+        }}
+        "#,
+        p1 = path1,
+        p2 = path2
+    );
+
+    let module_live = strata_parse::parse_str("<test>", &src_live).expect("parse");
+    let mut tc = strata_types::TypeChecker::new();
+    tc.check_module(&module_live).expect("typecheck");
+    let buf = SharedBuf::new();
+    let writer = buf.clone();
+    let _ = run_module_traced(&module_live, Box::new(writer)).expect("live run");
+    let trace = buf.contents();
+
+    // Replay with only 1 read
+    let src_replay = format!(
+        r#"
+        extern fn read_file(fs: &FsCap, path: String) -> String & {{Fs}};
+
+        fn main(fs: FsCap) -> String & {{Fs}} {{
+            read_file(&fs, "{p1}")
+        }}
+        "#,
+        p1 = path1
+    );
+
+    let module_replay = strata_parse::parse_str("<test>", &src_replay).expect("parse");
+    let mut tc2 = strata_types::TypeChecker::new();
+    tc2.check_module(&module_replay).expect("typecheck");
+    let err = run_module_replay(&module_replay, &trace).unwrap_err().to_string();
+    assert!(
+        err.contains("unreplayed"),
+        "expected unreplayed effects error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn replay_detects_missing_effects() {
+    // Trace has 1 call, program makes 2 → UnexpectedEffect
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let file1 = dir.path().join("missing1.txt");
+    std::fs::write(&file1, "only").expect("write");
+    let path1 = file1.to_str().unwrap();
+
+    // Record trace with 1 read
+    let src_live = format!(
+        r#"
+        extern fn read_file(fs: &FsCap, path: String) -> String & {{Fs}};
+
+        fn main(fs: FsCap) -> String & {{Fs}} {{
+            read_file(&fs, "{p1}")
+        }}
+        "#,
+        p1 = path1
+    );
+
+    let module_live = strata_parse::parse_str("<test>", &src_live).expect("parse");
+    let mut tc = strata_types::TypeChecker::new();
+    tc.check_module(&module_live).expect("typecheck");
+    let buf = SharedBuf::new();
+    let writer = buf.clone();
+    let _ = run_module_traced(&module_live, Box::new(writer)).expect("live run");
+    let trace = buf.contents();
+
+    // Replay with 2 reads
+    let src_replay = format!(
+        r#"
+        extern fn read_file(fs: &FsCap, path: String) -> String & {{Fs}};
+
+        fn main(fs: FsCap) -> String & {{Fs}} {{
+            let _a = read_file(&fs, "{p1}");
+            read_file(&fs, "{p1}")
+        }}
+        "#,
+        p1 = path1
+    );
+
+    let module_replay = strata_parse::parse_str("<test>", &src_replay).expect("parse");
+    let mut tc2 = strata_types::TypeChecker::new();
+    tc2.check_module(&module_replay).expect("typecheck");
+    let err = run_module_replay(&module_replay, &trace).unwrap_err().to_string();
+    assert!(
+        err.contains("unexpected extern call") || err.contains("not in trace"),
+        "expected unexpected effect error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn replay_handles_errors() {
+    // Record a trace that contains an error, then replay and verify same error
+    let src = r#"
+        extern fn read_file(fs: &FsCap, path: String) -> String & {Fs};
+
+        fn main(fs: FsCap) -> String & {Fs} {
+            read_file(&fs, "/nonexistent/replay_error.txt")
+        }
+    "#;
+
+    let module = strata_parse::parse_str("<test>", src).expect("parse");
+    let mut tc = strata_types::TypeChecker::new();
+    tc.check_module(&module).expect("typecheck");
+
+    // Live run — capture trace (program errors)
+    let buf = SharedBuf::new();
+    let writer = buf.clone();
+    let live_err = run_module_traced(&module, Box::new(writer))
+        .unwrap_err()
+        .to_string();
+    let trace = buf.contents();
+
+    // Replay — should produce same error
+    let replay_err = run_module_replay(&module, &trace)
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        replay_err.contains("read_file"),
+        "replayed error should mention read_file: {}",
+        replay_err
+    );
+    // Both should contain the same host error message
+    assert!(
+        live_err.contains("read_file") && replay_err.contains("read_file"),
+        "live='{}', replay='{}'",
+        live_err,
+        replay_err
+    );
 }

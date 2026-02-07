@@ -43,7 +43,7 @@ impl std::error::Error for HostError {}
 // ---------------------------------------------------------------------------
 
 /// A single trace entry recording one host function call.
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct TraceEntry {
     pub seq: u64,
     pub timestamp: String,
@@ -56,14 +56,14 @@ pub struct TraceEntry {
 }
 
 /// Reference to the capability used in a host call.
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct CapRef {
     pub kind: String,
     pub access: String,
 }
 
 /// Output section of a trace entry.
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct TraceOutput {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -321,6 +321,215 @@ impl HostRegistry {
 }
 
 // ---------------------------------------------------------------------------
+// TraceReplayer — deterministic replay from recorded traces
+// ---------------------------------------------------------------------------
+
+/// Errors from trace replay.
+#[derive(Debug)]
+pub enum ReplayError {
+    /// Program performed an extern call not present in the trace.
+    UnexpectedEffect(String),
+    /// Extern call order diverged from the trace.
+    OperationMismatch {
+        expected: String,
+        actual: String,
+        seq: u64,
+    },
+    /// Inputs to an extern call diverged from the trace.
+    InputMismatch {
+        operation: String,
+        seq: u64,
+        expected: serde_json::Value,
+        actual: serde_json::Value,
+    },
+    /// Output was hashed (>1KB), cannot replay without full value.
+    MissingValue {
+        operation: String,
+        seq: u64,
+        value_size: usize,
+    },
+    /// Trace has entries that were never replayed.
+    UnreplayedEffects(usize),
+    /// The trace recorded an error; replay returns it.
+    ReplayedError(String),
+    /// Unknown status in trace entry.
+    UnknownStatus(String),
+    /// JSONL parse error.
+    ParseError(usize, String),
+    /// I/O error reading trace file.
+    Io(String),
+}
+
+impl std::fmt::Display for ReplayError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReplayError::UnexpectedEffect(op) => {
+                write!(f, "replay: unexpected extern call '{}' not in trace", op)
+            }
+            ReplayError::OperationMismatch {
+                expected,
+                actual,
+                seq,
+            } => write!(
+                f,
+                "replay: operation mismatch at seq {}: expected '{}', got '{}'",
+                seq, expected, actual
+            ),
+            ReplayError::InputMismatch {
+                operation,
+                seq,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "replay: input mismatch for '{}' at seq {}: expected {}, got {}",
+                operation, seq, expected, actual
+            ),
+            ReplayError::MissingValue {
+                operation,
+                seq,
+                value_size,
+            } => write!(
+                f,
+                "cannot replay: output for '{}' at seq {} was hashed ({} bytes). \
+                 Re-run with --trace-full to record complete values",
+                operation, seq, value_size
+            ),
+            ReplayError::UnreplayedEffects(n) => {
+                write!(f, "replay: trace has {} unreplayed entries", n)
+            }
+            ReplayError::ReplayedError(msg) => write!(f, "{}", msg),
+            ReplayError::UnknownStatus(s) => {
+                write!(f, "replay: unknown status '{}' in trace", s)
+            }
+            ReplayError::ParseError(line, msg) => {
+                write!(f, "replay: parse error at line {}: {}", line, msg)
+            }
+            ReplayError::Io(msg) => write!(f, "replay: I/O error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for ReplayError {}
+
+/// Replays a previously recorded trace, substituting recorded outputs
+/// instead of calling real host functions.
+#[derive(Debug)]
+pub struct TraceReplayer {
+    entries: Vec<TraceEntry>,
+    cursor: usize,
+}
+
+impl TraceReplayer {
+    /// Load a trace from JSONL content (one JSON object per line).
+    pub fn from_jsonl(content: &str) -> Result<Self, ReplayError> {
+        let entries: Vec<TraceEntry> = content
+            .lines()
+            .filter(|l| !l.is_empty())
+            .enumerate()
+            .map(|(i, line)| {
+                serde_json::from_str(line)
+                    .map_err(|e| ReplayError::ParseError(i, e.to_string()))
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self { entries, cursor: 0 })
+    }
+
+    /// Replay the next extern call. Validates operation and inputs match
+    /// the trace, then returns the recorded output.
+    pub fn next(
+        &mut self,
+        operation: &str,
+        inputs: &serde_json::Value,
+    ) -> Result<Value, ReplayError> {
+        let entry = self
+            .entries
+            .get(self.cursor)
+            .ok_or_else(|| ReplayError::UnexpectedEffect(operation.to_string()))?;
+
+        if entry.operation != operation {
+            return Err(ReplayError::OperationMismatch {
+                expected: entry.operation.clone(),
+                actual: operation.to_string(),
+                seq: self.cursor as u64,
+            });
+        }
+
+        if entry.inputs != *inputs {
+            return Err(ReplayError::InputMismatch {
+                operation: operation.to_string(),
+                seq: self.cursor as u64,
+                expected: entry.inputs.clone(),
+                actual: inputs.clone(),
+            });
+        }
+
+        self.cursor += 1;
+
+        match entry.output.status.as_str() {
+            "ok" => {
+                let value_str = entry.output.value.as_ref().ok_or_else(|| {
+                    ReplayError::MissingValue {
+                        operation: operation.to_string(),
+                        seq: (self.cursor - 1) as u64,
+                        value_size: entry.output.value_size,
+                    }
+                })?;
+                Ok(deserialize_value(value_str))
+            }
+            "error" => {
+                let err_msg = entry
+                    .output
+                    .value
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or_else(|| "unknown error".to_string());
+                Err(ReplayError::ReplayedError(err_msg))
+            }
+            other => Err(ReplayError::UnknownStatus(other.to_string())),
+        }
+    }
+
+    /// Verify that all trace entries were replayed.
+    pub fn verify_complete(&self) -> Result<(), ReplayError> {
+        if self.cursor < self.entries.len() {
+            Err(ReplayError::UnreplayedEffects(
+                self.entries.len() - self.cursor,
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Deserialize a trace value string back into a runtime Value.
+///
+/// This is a best-effort inverse of serialize_value(). Since the trace
+/// format is lossy (all values become strings), we attempt to parse
+/// Int, Float, Bool, and Unit, falling back to String.
+fn deserialize_value(s: &str) -> Value {
+    if s == "()" {
+        return Value::Unit;
+    }
+    if s == "true" {
+        return Value::Bool(true);
+    }
+    if s == "false" {
+        return Value::Bool(false);
+    }
+    if let Ok(n) = s.parse::<i64>() {
+        return Value::Int(n);
+    }
+    if let Ok(f) = s.parse::<f64>() {
+        // Only treat as float if it contains a dot (avoid "42" -> 42.0)
+        if s.contains('.') {
+            return Value::Float(f);
+        }
+    }
+    Value::Str(s.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -333,7 +542,7 @@ fn sha256_hex(data: &str) -> String {
 }
 
 /// Serialize a runtime Value to a compact string for trace output.
-fn serialize_value(val: &Value) -> String {
+pub fn serialize_value(val: &Value) -> String {
     match val {
         Value::Str(s) => s.clone(),
         Value::Int(n) => n.to_string(),
