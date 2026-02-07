@@ -6,9 +6,13 @@
 use anyhow::{bail, Result};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use strata_ast::ast::{
     BinOp, Block, Expr, FieldInit, Lit, MatchArm, Module, Pat, Path, Stmt, UnOp,
 };
+use strata_types::CapKind;
+
+use crate::host::{HostRegistry, TraceEmitter};
 
 /// Maximum call depth to prevent stack overflow from deep recursion
 const MAX_CALL_DEPTH: u32 = 1000;
@@ -45,6 +49,10 @@ pub enum Value {
         variant_name: String,
         fields: Vec<Value>,
     },
+    /// Runtime capability token
+    Cap(CapKind),
+    /// Host function reference (extern fn name)
+    HostFn(String),
 }
 
 impl std::fmt::Display for Value {
@@ -99,6 +107,8 @@ impl std::fmt::Display for Value {
                 }
                 Ok(())
             }
+            Value::Cap(kind) => write!(f, "<cap:{}>", kind.type_name()),
+            Value::HostFn(name) => write!(f, "<host_fn:{}>", name),
         }
     }
 }
@@ -145,16 +155,32 @@ struct Binding {
 /// Environment with lexical scoping
 ///
 /// Uses a stack of scopes for proper variable shadowing and block scoping.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Env {
     scopes: Vec<HashMap<String, Binding>>,
+    host_registry: Option<Arc<HostRegistry>>,
+}
+
+impl Default for Env {
+    fn default() -> Self {
+        Self {
+            scopes: vec![HashMap::new()],
+            host_registry: None,
+        }
+    }
 }
 
 impl Env {
     /// Create a new environment with a single empty scope
     pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a new environment with a host function registry
+    pub fn with_host_registry(registry: Arc<HostRegistry>) -> Self {
         Self {
             scopes: vec![HashMap::new()],
+            host_registry: Some(registry),
         }
     }
 
@@ -235,6 +261,17 @@ pub fn eval_module(m: &Module) -> Result<()> {
         })
         .collect();
 
+    // Pass 0: Register extern fns as host function references
+    for item in &m.items {
+        if let Item::ExternFn(decl) = item {
+            env.define(
+                decl.name.text.clone(),
+                Value::HostFn(decl.name.text.clone()),
+                false,
+            );
+        }
+    }
+
     // Pass 1: Define all function names as mutable placeholders
     // This allows forward references and self-references
     for decl in &fn_decls {
@@ -288,6 +325,146 @@ pub fn eval_module(m: &Module) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Extract a capability type name from a TypeExpr.
+///
+/// Returns the type name for `FsCap` (from `TypeExpr::Path`) or `&FsCap`
+/// (from `TypeExpr::Ref(TypeExpr::Path(...))`).
+fn extract_cap_type_name(ty: &strata_ast::ast::TypeExpr) -> Option<String> {
+    use strata_ast::ast::TypeExpr;
+    match ty {
+        TypeExpr::Path(segments, _) if segments.len() == 1 => Some(segments[0].text.clone()),
+        TypeExpr::Ref(inner, _) => extract_cap_type_name(inner),
+        _ => None,
+    }
+}
+
+/// Run a module with host function dispatch and main() capability injection.
+///
+/// This is the primary entry point for programs that use capabilities.
+/// It creates a host registry, registers extern fns, inspects main()'s
+/// parameter types, and injects the requested capabilities as `Value::Cap`.
+pub fn run_module(m: &Module) -> Result<Value> {
+    use strata_ast::ast::Item;
+
+    let registry = Arc::new(HostRegistry::new());
+    let mut env = Env::with_host_registry(registry);
+
+    // Register extern fns as host function references
+    for item in &m.items {
+        if let Item::ExternFn(decl) = item {
+            env.define(
+                decl.name.text.clone(),
+                Value::HostFn(decl.name.text.clone()),
+                false,
+            );
+        }
+    }
+
+    // Collect and register Strata function declarations (same as eval_module)
+    let fn_decls: Vec<_> = m
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let Item::Fn(decl) = item {
+                Some(decl)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Pass 1: Define all function names as mutable placeholders
+    for decl in &fn_decls {
+        env.define(decl.name.text.clone(), Value::Unit, true);
+    }
+
+    // Pass 2: Create closures that capture env with all names defined
+    for decl in &fn_decls {
+        let closure = Value::Closure {
+            params: decl.params.iter().map(|p| p.name.text.clone()).collect(),
+            body: decl.body.clone(),
+            env: env.clone(),
+        };
+        env.set(&decl.name.text, closure).ok();
+    }
+
+    // Pass 3: Re-create closures for recursion support
+    for decl in &fn_decls {
+        let closure = Value::Closure {
+            params: decl.params.iter().map(|p| p.name.text.clone()).collect(),
+            body: decl.body.clone(),
+            env: env.clone(),
+        };
+        env.set(&decl.name.text, closure).ok();
+    }
+
+    // Pass 4: Evaluate let bindings
+    for item in &m.items {
+        if let Item::Let(ld) = item {
+            let cf = eval_expr(&mut env, &ld.value)?;
+            let v = cf.into_value();
+            env.define(ld.name.text.clone(), v, false);
+        }
+    }
+
+    // Pass 5: Find main() and call with injected capabilities
+    let main_decl = m.items.iter().find_map(|item| {
+        if let Item::Fn(decl) = item {
+            if decl.name.text == "main" {
+                Some(decl)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    });
+
+    let main_decl = match main_decl {
+        Some(d) => d,
+        None => return Ok(Value::Unit),
+    };
+
+    // Build capability args from main()'s param type annotations
+    let mut cap_args: Vec<Value> = Vec::new();
+    for param in &main_decl.params {
+        if let Some(ty_expr) = &param.ty {
+            if let Some(name) = extract_cap_type_name(ty_expr) {
+                if let Some(kind) = CapKind::from_name(&name) {
+                    cap_args.push(Value::Cap(kind));
+                }
+            }
+        }
+    }
+
+    // Call main with cap args
+    let main_val = env
+        .get("main")
+        .ok_or_else(|| anyhow::anyhow!("main function not found"))?
+        .clone();
+
+    if let Value::Closure {
+        params,
+        body,
+        env: closure_env,
+    } = main_val
+    {
+        let mut call_env = closure_env;
+        call_env.push_scope();
+
+        // Bind parameters to capability arguments
+        for (param, value) in params.iter().zip(cap_args) {
+            call_env.define(param.clone(), value, false);
+        }
+
+        let result = eval_block(&mut call_env, &body)?;
+        call_env.pop_scope()?;
+        Ok(result.into_value())
+    } else {
+        bail!("main is not a function")
+    }
 }
 
 /// Evaluate an expression
@@ -705,6 +882,34 @@ fn eval_call_inner(env: &mut Env, callee: &Expr, args: &[Expr]) -> Result<Contro
                 variant_name: variant_name.clone(),
                 fields: field_values,
             }));
+        }
+    }
+
+    // Handle host function dispatch for extern fns
+    if let Value::HostFn(name) = &callee_val {
+        let mut arg_values = Vec::new();
+        for arg in args {
+            let cf = eval_expr(env, arg)?;
+            if cf.is_return() {
+                return Ok(cf);
+            }
+            arg_values.push(cf.into_value());
+        }
+
+        // Filter out capability args — host fns only receive data args
+        let data_args: Vec<_> = arg_values
+            .into_iter()
+            .filter(|v| !matches!(v, Value::Cap(_)))
+            .collect();
+
+        let registry = env
+            .host_registry
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no host registry available for extern fn '{}'", name))?;
+        let mut tracer = TraceEmitter::new();
+        match registry.call(name, &data_args, &mut tracer) {
+            Ok(val) => return Ok(ControlFlow::Value(val)),
+            Err(e) => bail!("host function '{}': {}", name, e),
         }
     }
 

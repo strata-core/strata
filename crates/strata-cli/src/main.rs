@@ -1,7 +1,6 @@
-mod eval;
-
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
+use strata_ast::ast::Item;
 use strata_parse::parse_str;
 use strata_types::TypeChecker;
 
@@ -53,7 +52,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if cli.eval {
-        eval::eval_module(&module)?;
+        // Check if main() has parameters (needs capability injection)
+        let has_main_params = module.items.iter().any(|item| {
+            matches!(item, Item::Fn(d) if d.name.text == "main" && !d.params.is_empty())
+        });
+
+        if has_main_params {
+            let result = strata_cli::eval::run_module(&module)?;
+            println!("main() = {}", result);
+        } else {
+            strata_cli::eval::eval_module(&module)?;
+        }
         return Ok(());
     }
 
