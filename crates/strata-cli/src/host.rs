@@ -84,6 +84,7 @@ pub struct TraceOutput {
 pub struct TraceEmitter {
     seq: u64,
     writer: Option<Box<dyn Write + Send>>,
+    full_values: bool,
 }
 
 impl std::fmt::Debug for TraceEmitter {
@@ -103,10 +104,14 @@ impl Default for TraceEmitter {
 
 impl TraceEmitter {
     /// Create a trace emitter that writes JSONL to the given writer.
-    pub fn new(writer: Box<dyn Write + Send>) -> Self {
+    /// When `full_values` is true, all output values are recorded regardless
+    /// of size (for replay-capable traces). When false, values > 1KB are
+    /// replaced with their SHA-256 hash.
+    pub fn new(writer: Box<dyn Write + Send>, full_values: bool) -> Self {
         Self {
             seq: 0,
             writer: Some(writer),
+            full_values,
         }
     }
 
@@ -115,7 +120,13 @@ impl TraceEmitter {
         Self {
             seq: 0,
             writer: None,
+            full_values: false,
         }
+    }
+
+    /// Whether this tracer records full values (no size-based hashing).
+    pub fn full_values(&self) -> bool {
+        self.full_values
     }
 
     /// Return the next sequence number and advance the counter.
@@ -276,12 +287,13 @@ impl HostRegistry {
         let result = self.call(name, &data_args, tracer);
         let duration = start.elapsed();
 
+        let full = tracer.full_values();
         let (status, output_value, output_hash, output_size) = match &result {
             Ok(val) => {
                 let serialized = serialize_value(val);
                 let hash = sha256_hex(&serialized);
                 let size = serialized.len();
-                let value = if size <= 1024 {
+                let value = if full || size <= 1024 {
                     Some(serialized)
                 } else {
                     None

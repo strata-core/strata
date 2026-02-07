@@ -1,147 +1,84 @@
 # Strata: In Progress
 
 **Last Updated:** February 2026
-**Current Version:** v0.0.10.1
-**Current Focus:** Issue 011a (Traced Runtime — Interpreter-based)
-**Progress:** Issues 001-010 complete + pre-011 security hardening
+**Current Version:** v0.0.11
+**Current Focus:** Post-011a — next issue TBD
+**Progress:** Issues 001-010 + 011a complete
 
 ---
 
 ## Current Status
 
-### v0.0.10.1: Pre-011 Security Hardening (Feb 2026)
-
-**Security fix: Kind propagation for compound types**
-
-`Ty::kind()` now propagates affinity through ADTs, tuples, and lists. Previously, `Smuggler<FsCap>` was classified as `Kind::Unrestricted`, allowing capability duplication through generic wrappers — a full capability bypass.
-
-**What was fixed:**
-- `Ty::kind()` recurses into `Ty::Adt` type args, `Ty::Tuple` elements, and `Ty::List` inner type
-- Generic ADTs containing capabilities (e.g., `Smuggler<FsCap>`) are correctly `Kind::Affine`
-- Defense-in-depth: move checker resolves generic field types through ADT registry substitution
-- `Ty::kind()` documented for future closure affinity propagation
-
-**New tests:** 7 tests (4 exploit/negative, 2 ban regression, 1 closure ban)
-**Total tests:** 442
-
----
-
-### Issue 010: Affine Types / Linear Capabilities COMPLETE (Feb 2026)
+### Issue 011a: Traced Runtime COMPLETE (Feb 2026)
 
 **What was built:**
 
-**Kind System:**
-- `Kind` enum: `Unrestricted` (free use) and `Affine` (at-most-once)
-- `Ty::kind()` method: `Ty::Cap(_)` → `Affine`; compound types propagate affinity from contents
-- Kind is intrinsic to the type — no user annotation needed
+**5 phases, 25 new tests (477 total):**
 
-**Move Checker (post-inference pass):**
-- Separate validation pass after type inference — does NOT modify unification or solver
-- Tracks binding consumption: each affine binding used at most once
-- Generation-based binding IDs for correct shadowing
-- Let-binding transfers ownership: `let a = fs;` consumes `fs`, makes `a` alive
-- Function call arguments evaluated left-to-right with cumulative state
-- Pessimistic branch join: if consumed in ANY branch, consumed after if/else/match
-- Loop rejection: capability use inside while loops is an error
-- Polymorphic return type resolution via manual scheme instantiation
+**Phase 1: Extern-Only Borrowing**
+- `&CapType` syntax in extern fn params — borrow without consuming
+- `Ty::Ref(Box<Ty>)` reference type, restricted to extern fn params
+- Move checker treats borrows as non-consuming
 
-**CapabilityInBinding Replaced:**
-- `let cap = fs;` is now a valid ownership transfer (was error in Issue 009)
-- Move checker enforces single-use instead of blanket rejection
-- ADT field capability ban remains (caps cannot be struct/enum fields)
+**Phase 2: Host Function Dispatch**
+- `HostRegistry` with 4 built-in host fns (read_file, write_file, now, random_int)
+- Capability injection at main() entry point
+- Position-aware dispatch via ExternFnMeta
 
-**Error Messages (permission/authority vocabulary):**
-- `capability 'fs' has already been used; permission was transferred at ...; 'fs' is no longer available`
-- `cannot use single-use capability 'fs' inside loop; 'fs' would be used on every iteration`
-- Designed for SRE/DevOps audience, not PL researchers
+**Phase 3: Effect Trace Emission**
+- Streaming JSONL trace for every host fn call
+- SHA-256 content hashing for outputs > 1KB
+- Single dispatch path: always `dispatch_traced()`
 
-**Security Milestone: Capability Model Complete**
+**Phase 4: Deterministic Replay**
+- `TraceReplayer` loads JSONL, validates operations + inputs
+- Structured `ReplayError` enum for mismatch reporting
+- `run_module_replay()` with `verify_complete()`
 
-| Property | Enforced by | Issue |
-|----------|-------------|-------|
-| No forging | Built-in types, reserved names | 009 |
-| No ambient authority | Effects require matching capabilities | 009 |
-| No duplication | Affine single-use enforcement | 010 |
-| No leaking | Cannot store in ADTs or closures | 009 + 010 |
-| Explicit flow | Capabilities threaded through calls | 009 + 010 |
-| Auditability | Capability usage visible in signatures | 009 |
+**Phase 5: CLI Integration**
+- `strata run` / `strata replay` / `strata parse` subcommands
+- `--trace` (audit, hashed) and `--trace-full` (replay-capable) flags
+- Trace summary output, example program + documentation
 
-**Test stats:** 442 tests passing (33 move checker + 7 hardening)
+**End-to-end workflow:**
+```bash
+strata run program.strata --trace-full trace.jsonl
+strata replay trace.jsonl program.strata
+# "Replay successful: 3 effects replayed."
+```
 
 ---
 
-### Issue 009: Capability Types COMPLETE (Feb 6-7, 2026, 1 week)
+### Previous Completions
 
-**What was built:**
+**Issue 010: Affine Types / Linear Capabilities** (Feb 2026)
+- Kind system, move checker, single-use enforcement
+- 442 tests at completion
 
-**Capability Types:**
-- Five capability types: `FsCap`, `NetCap`, `TimeCap`, `RandCap`, `AiCap`
-- First-class `Ty::Cap(CapKind)` variant in the type system (not ADTs)
-- `CapKind` enum with 1:1 mapping to effects
+**Issue 009: Capability Types** (Feb 2026)
+- Mandatory capability validation, zero-cap skip fix
+- Externally validated by 3 independent reviewers
 
-**Mandatory Capability Validation:**
-- `validate_caps_against_effects()` shared helper — mandatory for ALL functions and externs
-- Functions with concrete effects MUST have matching capability parameters (no exceptions)
-- Extern functions with declared effects MUST have matching capability parameters
-- Open tail effect variables (from HOF callbacks) are not checked (correct — parametric effects)
-- Unused capabilities are allowed (pass-through pattern)
+**Issue 008: Effect System** (Feb 2026)
+- Remy-style row polymorphism, two-phase solver
 
-**Critical Fix: Zero-Cap Skip Eliminated:**
-- Removed `if !param_caps.is_empty()` guard that allowed zero-cap functions to bypass enforcement
-- Three independent external reviewers flagged this as critical
-
-**External Validation (3 Independent Sources):**
-- Security Review: 7/10 confidence (up from 5/10) — "Core bypass patched"
-- PL Researcher: "Green Light — mathematically sound capability-security model"
-- Technical Assessment: 0.87-0.90 (up from 0.80-0.85) — "Single biggest security/DX footgun removed"
-
----
-
-### Issue 008: Effect System COMPLETE (Feb 5, 2026)
-
-- Remy-style row polymorphism for effects
-- Two-phase constraint solver (type equality then effect subset)
-- Bitmask-based EffectRow with open/closed rows
-- Effect inference, checking, and propagation
-
----
-
-## Recent Completions
-
-### Issue 007: ADTs & Pattern Matching COMPLETE (Feb 4, 2026)
-
-- Struct and enum definitions with generics
-- Pattern matching with exhaustiveness checking
-- Tuple types and destructuring
-- Evaluator support for all ADT operations
-
----
-
-### Issue 006-Hardening COMPLETE (Feb 2-3, 2026)
-
-- DoS protection limits across all crates
-- Soundness fixes for Never type and divergence
-- Removed panic!/expect() from type checker
+**Issues 001-007:** Parser, type inference, control flow, ADTs, pattern matching
 
 ---
 
 ## Development Lessons
 
-### Key Learnings from Issue 010
-- **Move checker is a separate pass:** Keeping it out of the unifier/solver preserves inference simplicity
-- **Pessimistic branch join is correct for safety:** If consumed in ANY branch, treat as consumed
-- **Permission vocabulary matters:** "Capability has already been used" is clearer than "moved value" for our target audience
-
-### Key Learnings from Issue 009
-- **Security enforcement must never be opt-in:** The zero-cap skip guard was a critical bypass. Three independent reviewers caught it. Rule: if removing a guard breaks tests, update the tests.
-- **Multi-source review is now proven:** Three independent reviewers converged on the same critical finding.
-- **Shared validation helpers prevent drift:** `validate_caps_against_effects()` ensures fn and extern paths stay consistent.
+### Key Learnings from Issue 011a
+- **Single dispatch path**: Always use `dispatch_traced()` — never branch on tracer presence for dispatch logic. `TraceEmitter::disabled()` handles the no-output case.
+- **Position-aware dispatch**: Walk the extern fn's type signature to classify params as Cap vs Data. Don't filter by runtime `Value::Cap(_)` type.
+- **Replay before live**: Check replayer BEFORE live dispatch in the call path. Replayer takes priority.
+- **Security enforcement unconditional**: Missing ExternFnMeta is a hard error, not a graceful degradation.
 
 ### Development Philosophy
 - **Soundness over speed** — A type system that lies is worse than no type system
 - **Foundation integrity** — Fix bugs before they compound
 - **Post-completion review** — Always audit before moving forward
-- **Rigor over ergonomics** — Never compromise safety for convenience
+- **Security enforcement must never be opt-in** — The zero-cap skip incident
 
 ---
 
@@ -149,10 +86,10 @@
 
 **Codebase:**
 - 4 crates (strata-ast, strata-parse, strata-types, strata-cli)
-- ~10,000+ lines of Rust code
-- 442 tests (all passing)
+- ~12,000+ lines of Rust code
+- 477 tests (all passing)
 - 0 clippy warnings (enforced)
 
 **Velocity:**
-- Issues 001-010: ~2.5 months
+- Issues 001-010 + 011a: ~2.5 months
 - On track for v0.1 timeline

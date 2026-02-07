@@ -366,18 +366,26 @@ fn extract_cap_type_name(ty: &strata_ast::ast::TypeExpr) -> Option<String> {
 /// This is the primary entry point for programs that use capabilities.
 /// No trace output is produced.
 pub fn run_module(m: &Module) -> Result<Value> {
-    run_module_inner(m, None)
+    run_module_inner(m, None, false)
 }
 
 /// Run a module with host function dispatch, capability injection, and
 /// JSONL trace output written to the provided writer.
+/// Values > 1KB are hashed (not suitable for replay).
 pub fn run_module_traced(m: &Module, writer: Box<dyn std::io::Write + Send>) -> Result<Value> {
-    run_module_inner(m, Some(writer))
+    run_module_inner(m, Some(writer), false)
+}
+
+/// Run a module with full trace output (all values recorded, no hashing).
+/// The resulting trace is suitable for deterministic replay.
+pub fn run_module_traced_full(m: &Module, writer: Box<dyn std::io::Write + Send>) -> Result<Value> {
+    run_module_inner(m, Some(writer), true)
 }
 
 fn run_module_inner(
     m: &Module,
     trace_writer: Option<Box<dyn std::io::Write + Send>>,
+    full_values: bool,
 ) -> Result<Value> {
     use strata_ast::ast::Item;
 
@@ -413,7 +421,7 @@ fn run_module_inner(
 
     let registry = Arc::new(registry);
 
-    let tracer = trace_writer.map(|w| Arc::new(Mutex::new(TraceEmitter::new(w))));
+    let tracer = trace_writer.map(|w| Arc::new(Mutex::new(TraceEmitter::new(w, full_values))));
 
     let mut env = Env::with_host_registry(registry);
     if let Some(t) = tracer {
