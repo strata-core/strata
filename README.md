@@ -1,6 +1,6 @@
 # Strata — Layered Safety by Design
 
-> **Status:** v0.0.11 — Traced Runtime (Effect Tracing + Deterministic Replay) complete
+> **Status:** v0.0.12 — Runtime Affine Integrity (Defense-in-Depth Tombstones) complete
 >
 > **License:** MIT
 >
@@ -183,7 +183,11 @@ fn ai_agent(
 - Streaming JSONL effect traces with SHA-256 hashing for large values
 - Deterministic replay: validate program behavior against recorded traces
 - CLI: `strata run`, `strata replay`, `strata parse` subcommands
-- **493 comprehensive tests** (all passing)
+- **Runtime affine integrity** — defense-in-depth tombstone enforcement
+- Value::Consumed tombstone prevents capability duplication even if move checker has bugs
+- Recursive affinity detection walks compound types (tuples, structs, variants)
+- Scope-aware destructive reads with CAP-MOVE-RUNTIME safety violation errors
+- **507 comprehensive tests** (all passing)
 
 ✅ **Security Hardening:**
 - DoS protection: source size (1MB), token count (200K), parser nesting (512), inference depth (512), eval call depth (1000), effect vars (4096)
@@ -221,7 +225,7 @@ cargo run -p strata-cli -- replay trace.jsonl examples/deploy.strata
 # Parse and dump AST
 cargo run -p strata-cli -- parse examples/add.strata
 
-# Run tests (493 tests)
+# Run tests (507 tests)
 cargo test --workspace
 ```
 
@@ -311,7 +315,7 @@ fn add(x: Int, y: Int) -> Int { x + y }
 # Build everything
 cargo build --workspace
 
-# Run all tests (493 tests)
+# Run all tests (507 tests)
 cargo test --workspace
 
 # Run clippy (enforced in CI)
@@ -337,8 +341,8 @@ cargo run -p strata-cli -- replay trace.jsonl examples/deploy.strata
 **Phase 1 (Complete):** Parser, AST, basic type checking ✅  
 **Phase 2 (Complete):** Functions ✅, hardening ✅, blocks ✅, ADTs ✅  
 **Phase 3 (Complete):** Effect system ✅, capabilities ✅, affine types ✅
-**Phase 3.5 (Complete):** Traced runtime ✅, deterministic replay ✅
-**Phase 4:** Stdlib, WASM compilation, network host functions
+**Phase 3.5 (Complete):** Traced runtime ✅, deterministic replay ✅, runtime affine integrity ✅
+**Phase 4:** Stdlib, `strata plan`, error reporting, v0.1 critical path
 **Phase 5:** Tooling, docs, killer demos, v0.1 launch  
 
 **v0.1 Target:** November 2026 - February 2027
