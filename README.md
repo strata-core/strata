@@ -1,7 +1,9 @@
 # Strata — Layered Safety by Design
 
 > **Status:** v0.0.10 — Affine Types (Linear Capabilities) complete
+>
 > **License:** MIT
+>
 > **Language:** Rust
 
 Strata is a general-purpose, strongly typed programming language designed for **safe automation**, **explainable AI**, and **resilient distributed systems**.
