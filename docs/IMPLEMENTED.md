@@ -1,7 +1,7 @@
 # Strata - Implemented Features
 
 > Last updated: February 2026
-> Status: Issues 001-010 + 011a complete
+> Status: Issues 001-012 complete
 
 ## ✅ Working Features
 
@@ -742,7 +742,62 @@ strata replay trace.jsonl example.strata
 
 ---
 
-### CLI (Issue 001, updated through 011a)
+### Issue 012: Affine Integrity Sprint (v0.0.12)
+
+**Completed:** February 2026
+**Test Coverage:** 507 tests (14 new)
+
+**Runtime defense-in-depth for affine semantics.** The interpreter now enforces
+single-use semantics independently of the static Move Checker.
+
+#### What shipped
+
+- **Value::Consumed tombstone:** Affine values leave a tombstone when consumed.
+  Any subsequent access hits the tombstone and produces a safety violation error
+  instead of silently duplicating the capability.
+- **Env::move_out():** Destructive read that traverses scopes in reverse order
+  and tombstones at the actual binding depth. Prevents the scope-pop resurrection
+  exploit identified in adversarial security review.
+- **Recursive affinity detection:** `Value::is_affine()` walks compound types
+  (tuples, structs, variants). A container holding a capability is itself affine.
+  Mirrors `Ty::kind()` propagation at the type level.
+- **Expr::Borrow exemption:** Borrow expressions (`&x`) read without tombstoning,
+  matching the static Move Checker's semantics. Uses direct `env.get()` for
+  `Expr::Var` inner expressions, preventing tombstone-through-borrow.
+- **CAP-MOVE-RUNTIME error code:** Safety violation errors include both the
+  use site and original transfer site, a note identifying it as a compiler bug,
+  and instructions to report. Error code enables grep/triage in production logs.
+
+#### Security model after this issue
+
+| Layer | Enforcement | Catches |
+|---|---|---|
+| Static (Move Checker) | Pre-runtime, type-level | All affine violations in well-typed programs |
+| Dynamic (Tombstones) | Runtime, value-level | Move Checker bugs, compound-type edge cases |
+
+Even a catastrophic Move Checker bug cannot lead to capability duplication at runtime.
+
+#### Known limitations (v0.1)
+
+- `Value` still derives `Clone`. Non-affine values need it. Tombstones are the
+  enforcement mechanism, not the removal of Clone. See v0.2 roadmap for CapToken.
+- Closure capture not hollowed at runtime. Static Move Checker bans affine capture
+  in v0.1. Runtime assertion deferred to v0.2 when user-defined closures are added.
+- `match_pattern` clones values into pattern bindings. The scrutinee is already
+  consumed from the environment, so the clone creates a new binding, not a second
+  path to the original. Ownership-based pattern matching deferred to v0.2+.
+- `is_affine()` is value-based, not type-based. Works for v0.1 where only
+  `Value::Cap` and containers thereof are affine. If new affine types are added
+  (e.g., affine closures), `is_affine()` must be updated.
+
+**Location:**
+- `crates/strata-cli/src/eval.rs` — Value::Consumed, Env::move_out(), check_not_consumed, is_affine()
+
+**Status:** Complete. Runtime affine enforcement working. Externally reviewed.
+
+---
+
+### CLI (Issue 001, updated through 012)
 
 **Commands:**
 ```bash
@@ -818,7 +873,7 @@ strata parse file.strata --format json
 # Build all crates
 cargo build --workspace
 
-# Run all tests (493 tests)
+# Run all tests (507 tests)
 cargo test --workspace
 
 # Run with clippy (enforced in CI)
@@ -856,9 +911,9 @@ strata-ast       (no deps)
 ## Project Stats
 
 - **Crates:** 4 (ast, parse, types, cli)
-- **Total Tests:** 493 (parser: 48, types: 174, cli: 26, host_integration: 29, cli_integration: 4, effects: 41, capabilities: 66, move_check: 38, others: 67)
+- **Total Tests:** 507 (parser: 48, types: 174, cli: 40, host_integration: 29, cli_integration: 4, effects: 41, capabilities: 66, move_check: 38, others: 67)
 - **Lines of Code:** ~12,000+ (estimate)
-- **Issues Completed:** 10 + hardening + 011a (Parser, Effects, Type Scaffolding, Basic Type Checking, Functions, Blocks, ADTs, Security Hardening, Effect System, Capability Types, Affine Types, Pre-011 Hardening, Traced Runtime)
+- **Issues Completed:** 12 (Parser, Effects, Type Scaffolding, Basic Type Checking, Functions, Blocks, ADTs, Security Hardening, Effect System, Capability Types, Affine Types, Pre-011 Hardening, Traced Runtime, Affine Integrity)
 - **Example Files:** 30+
 
 ---

@@ -123,10 +123,24 @@ impl std::fmt::Display for Value {
 }
 
 impl Value {
-    /// Returns true if this value has affine semantics and must be tombstoned after move.
-    /// Keys off runtime value type (Value::Cap), not the static type system.
-    pub fn is_affine(&self) -> bool {
-        matches!(self, Value::Cap(_))
+    /// Returns true if this value has affine semantics (single-use).
+    ///
+    /// A value is affine if it IS a capability or CONTAINS one.
+    /// This mirrors Ty::kind() propagation at the type level — the same
+    /// principle that caught the v0.0.10.1 kind propagation bypass now
+    /// operates at the runtime value level as defense-in-depth.
+    fn is_affine(&self) -> bool {
+        match self {
+            Value::Cap(_) => true,
+            Value::Tuple(elems) => elems.iter().any(|v| v.is_affine()),
+            Value::Struct { fields, .. } => fields.values().any(|v| v.is_affine()),
+            Value::Variant { fields, .. } => fields.iter().any(|v| v.is_affine()),
+            // Closures: NOT affine in v0.1. All closures are module-level function
+            // definitions. The static move checker bans closure capture of affine
+            // values. Making closures affine here would break every function call.
+            // Revisit when user-defined closures/lambdas are added (v0.2+).
+            _ => false,
+        }
     }
 }
 
@@ -786,15 +800,19 @@ fn build_replay_inputs(
 /// Runtime check: bail if the value is a consumed tombstone.
 /// This is defense-in-depth — the static move checker should prevent this,
 /// so hitting this at runtime indicates a move checker bug.
-fn check_not_consumed(val: &Value, var_name: &str) -> Result<()> {
-    if let Value::Consumed { moved_at, .. } = val {
+fn check_not_consumed(val: &Value, _var_name: &str, use_span: Span) -> Result<()> {
+    if let Value::Consumed { var_name: orig_name, moved_at } = val {
         bail!(
-            "[CAP-MOVE-RUNTIME] Capability '{}' was already moved at offset {}..{}. \
-             This is a runtime safety violation — the static move checker should have \
-             prevented this. Please report this bug.",
-            var_name,
-            moved_at.start,
-            moved_at.end,
+            "error[CAP-MOVE-RUNTIME]: capability '{}' has already been used\n  \
+             -> used at: {}:{}\n  \
+             -> previously transferred at: {}:{}\n\
+             \n  \
+             note: this should have been rejected at compile time. This is a Strata bug.\n  \
+             Please report at: https://github.com/strata-lang/strata/issues\n  \
+             Include your source file and `strata --version` output.",
+            orig_name,
+            use_span.start, use_span.end,
+            moved_at.start, moved_at.end,
         );
     }
     Ok(())
@@ -815,14 +833,17 @@ pub fn eval_expr(env: &mut Env, expr: &Expr) -> Result<ControlFlow> {
             // Peek first to check for consumed tombstone or affine value
             let is_affine = match env.get(&id.text) {
                 Some(v) => {
-                    check_not_consumed(v, &id.text)?;
+                    check_not_consumed(v, &id.text, id.span)?;
                     v.is_affine()
                 }
                 None => bail!("undefined variable `{}`", id.text),
             };
             if is_affine {
                 // Destructive read: take value out, leave tombstone
-                let val = env.move_out(&id.text, id.span).unwrap();
+                let val = env.move_out(&id.text, id.span)
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "internal error: move_out failed for `{}` — binding not found in any scope", id.text
+                    ))?;
                 Ok(ControlFlow::Value(val))
             } else {
                 Ok(ControlFlow::Value(env.get(&id.text).unwrap().clone()))
@@ -885,7 +906,7 @@ pub fn eval_expr(env: &mut Env, expr: &Expr) -> Result<ControlFlow> {
         Expr::Borrow(inner, _) => match inner.as_ref() {
             Expr::Var(id) => match env.get(&id.text) {
                 Some(v) => {
-                    check_not_consumed(v, &id.text)?;
+                    check_not_consumed(v, &id.text, id.span)?;
                     Ok(ControlFlow::Value(v.clone()))
                 }
                 None => bail!("undefined variable `{}`", id.text),
@@ -1422,13 +1443,16 @@ fn eval_path_expr(env: &mut Env, path: &Path) -> Result<ControlFlow> {
         let seg = &segments[0];
         let is_affine = match env.get(&seg.text) {
             Some(v) => {
-                check_not_consumed(v, &seg.text)?;
+                check_not_consumed(v, &seg.text, seg.span)?;
                 v.is_affine()
             }
             None => bail!("undefined: {}", seg.text),
         };
         if is_affine {
-            let val = env.move_out(&seg.text, seg.span).unwrap();
+            let val = env.move_out(&seg.text, seg.span)
+                .ok_or_else(|| anyhow::anyhow!(
+                    "internal error: move_out failed for `{}` — binding not found in any scope", seg.text
+                ))?;
             return Ok(ControlFlow::Value(val));
         } else {
             return Ok(ControlFlow::Value(env.get(&seg.text).unwrap().clone()));
@@ -2430,22 +2454,29 @@ mod tests {
     }
 
     #[test]
-    fn test_consumed_error_message_includes_span() {
+    fn test_consumed_error_message_includes_both_spans() {
         let mut env = Env::new();
         env.define("net".to_string(), Value::Cap(CapKind::Net), false);
 
-        // Use a span with identifiable offsets
-        let id = Ident {
+        // First use with identifiable span (becomes the "transferred at" span)
+        let id1 = Ident {
             text: "net".to_string(),
             span: Span { start: 42, end: 45 },
         };
-        let expr = Expr::Var(id.clone());
-        eval_expr(&mut env, &expr).unwrap();
+        eval_expr(&mut env, &Expr::Var(id1)).unwrap();
 
-        // Second use should mention the original span
-        let err = eval_expr(&mut env, &Expr::Var(id)).unwrap_err();
+        // Second use with different span (becomes the "used at" span)
+        let id2 = Ident {
+            text: "net".to_string(),
+            span: Span { start: 100, end: 103 },
+        };
+        let err = eval_expr(&mut env, &Expr::Var(id2)).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("42..45"), "error should include moved_at span, got: {msg}");
+        // Error should include both spans
+        assert!(msg.contains("previously transferred at: 42:45"), "should include moved_at span, got: {msg}");
+        assert!(msg.contains("used at: 100:103"), "should include use_span, got: {msg}");
+        assert!(msg.contains("CAP-MOVE-RUNTIME"), "should include error code, got: {msg}");
+        assert!(msg.contains("Strata bug"), "should identify as compiler bug, got: {msg}");
     }
 
     #[test]
@@ -2489,7 +2520,7 @@ mod tests {
 
     #[test]
     fn test_scope_tombstone_at_actual_depth() {
-        // Regression test for Grok's scoping exploit.
+        // Regression test for the scoping exploit found in adversarial review.
         // If move_out inserts Consumed as a shadow in the CURRENT scope
         // (instead of at the actual binding depth), popping the inner scope
         // would resurrect the capability.
@@ -2565,5 +2596,105 @@ mod tests {
         assert!(!Value::Bool(true).is_affine());
         assert!(!Value::Unit.is_affine());
         assert!(!Value::HostFn("read_file".to_string()).is_affine());
+    }
+
+    #[test]
+    fn test_compound_type_containing_cap_is_tombstoned() {
+        // A tuple containing a Cap should be treated as affine.
+        let mut env = Env::new();
+        env.define(
+            "t".to_string(),
+            Value::Tuple(vec![Value::Cap(CapKind::Fs), Value::Int(42)]),
+            false,
+        );
+
+        // First access succeeds and tombstones
+        let expr = Expr::Var(ident("t"));
+        let cf = eval_expr(&mut env, &expr).unwrap();
+        assert!(matches!(cf, ControlFlow::Value(Value::Tuple(_))));
+
+        // Second access hits the tombstone
+        let err = eval_expr(&mut env, &expr).unwrap_err();
+        assert!(err.to_string().contains("CAP-MOVE-RUNTIME"));
+    }
+
+    #[test]
+    fn test_nested_compound_affine() {
+        // A struct containing a tuple containing a Cap should also be affine.
+        let mut env = Env::new();
+        let mut fields = HashMap::new();
+        fields.insert(
+            "inner".to_string(),
+            Value::Tuple(vec![Value::Cap(CapKind::Net)]),
+        );
+        env.define(
+            "s".to_string(),
+            Value::Struct {
+                name: "Wrapper".to_string(),
+                fields,
+            },
+            false,
+        );
+
+        // First access succeeds
+        let expr = Expr::Var(ident("s"));
+        eval_expr(&mut env, &expr).unwrap();
+
+        // Second access hits the tombstone
+        let err = eval_expr(&mut env, &expr).unwrap_err();
+        assert!(err.to_string().contains("CAP-MOVE-RUNTIME"));
+    }
+
+    #[test]
+    fn test_compound_without_cap_is_not_affine() {
+        // A tuple of (Int, String) should NOT be tombstoned — freely copyable.
+        let mut env = Env::new();
+        env.define(
+            "t".to_string(),
+            Value::Tuple(vec![Value::Int(1), Value::Str("hello".to_string())]),
+            false,
+        );
+
+        let expr = Expr::Var(ident("t"));
+        eval_expr(&mut env, &expr).unwrap();
+        eval_expr(&mut env, &expr).unwrap(); // second read fine
+
+        // Value still intact
+        assert!(env.get("t").is_some());
+        assert!(!matches!(env.get("t"), Some(Value::Consumed { .. })));
+    }
+
+    #[test]
+    fn test_is_affine_compound() {
+        // Tuple with cap
+        assert!(Value::Tuple(vec![Value::Cap(CapKind::Fs), Value::Int(1)]).is_affine());
+        // Tuple without cap
+        assert!(!Value::Tuple(vec![Value::Int(1), Value::Bool(true)]).is_affine());
+        // Empty tuple
+        assert!(!Value::Tuple(vec![]).is_affine());
+
+        // Struct with cap in field
+        let mut fields = HashMap::new();
+        fields.insert("cap".to_string(), Value::Cap(CapKind::Net));
+        assert!(Value::Struct { name: "S".to_string(), fields }.is_affine());
+
+        // Struct without cap
+        let mut fields2 = HashMap::new();
+        fields2.insert("x".to_string(), Value::Int(42));
+        assert!(!Value::Struct { name: "S".to_string(), fields: fields2 }.is_affine());
+
+        // Variant with cap
+        assert!(Value::Variant {
+            enum_name: "E".to_string(),
+            variant_name: "V".to_string(),
+            fields: vec![Value::Cap(CapKind::Time)],
+        }.is_affine());
+
+        // Variant without cap
+        assert!(!Value::Variant {
+            enum_name: "E".to_string(),
+            variant_name: "V".to_string(),
+            fields: vec![Value::Int(1)],
+        }.is_affine());
     }
 }

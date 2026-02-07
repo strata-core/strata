@@ -1,7 +1,7 @@
 # Strata Roadmap
 
 **Last Updated:** February 2026
-**Current Version:** v0.0.11
+**Current Version:** v0.0.12
 **Target v0.1:** November 2026 - February 2027 (10-14 months from project start)
 
 This document describes the planned roadmap for Strata, organized by development phases. It reflects strategic decisions made in January 2026 to focus on a **minimal, shippable v0.1** that proves core value propositions.
@@ -157,19 +157,15 @@ See [`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md) for complete design philosophy 
 
 **v0.1 critical path: 012 → 013 → 014 → 015**
 
-### Issue 012: Affine Integrity Sprint (Runtime Hardening)
-**Estimated time:** 1-2 weeks
-**Status:** Planning
+### Issue 012: Affine Integrity Sprint (Runtime Hardening) ✅
+**Status:** COMPLETE (v0.0.12, 507 tests)
 
-Harden the interpreter to enforce affine semantics at runtime (defense-in-depth):
+Runtime defense-in-depth for affine semantics:
 - `Value::Consumed` tombstone for moved values
-- `Env::move_out()` — destructive read for affine variables
-- Closure capture hollowing
-- Match scrutinee consumption
-- Scope-aware tombstoning (critical finding from adversarial review)
-
-**Why first:** The interpreter is the v0.1 runtime and the Golden Specification for
-future backends. It must be correct before we expand the stdlib.
+- `Env::move_out()` — scope-aware destructive read
+- Recursive `is_affine()` for compound types
+- Borrow exemption, dual-span error reporting
+- Cohort review: 3 fixes (recursive affinity, unwrap removal, dual-span errors)
 
 ### Issue 013: Standard Library Primitives
 **Estimated time:** 2-3 weeks
@@ -255,6 +251,24 @@ Production-quality diagnostics with source snippets, underline markers,
 - Effect virtualization — shallow handlers (testing, sandboxing, dry-run)
 - Capability attenuation — coarse-grained least-privilege delegation
 - Hierarchical capability bundles (Issue 016)
+
+#### v0.2 Runtime Hardening
+
+**CapToken: Shared consumed state for capabilities**
+- Replace `Value::Cap(CapKind)` with `Value::Cap(CapToken)`
+- CapToken wraps `Rc<Cell<Option<Span>>>` — all clones share consumed flag
+- Every host-effect dispatch checks token not consumed
+- Every move marks token consumed with span
+- Eliminates the "alias escape" class of bugs entirely
+
+**Ownership-based pattern matching**
+- `match_pattern` takes `Value` by ownership, not reference
+- Failed arm match must re-constitute or accept consumption
+
+**Closure capture hollowing**
+- When user-defined closures/lambdas are added, closure creation must
+  move_out affine captures from parent environment
+- Requires capture list in AST (from move checker analysis)
 
 ### v0.3: The Compilation Release
 - **WASM compilation** — sandboxed/untrusted AI agent execution
@@ -345,16 +359,15 @@ was deferred, changing the dependency chain:
 
 ---
 
-## Current Status (v0.0.11)
+## Current Status (v0.0.12)
 
 **Completed:**
-- Issues 001-010 + 011a (all phases + hardening)
-- 493 tests (all passing)
+- Issues 001-012 (all phases + hardening + cohort review)
+- 507 tests (all passing)
 - 4 crates (ast, parse, types, cli)
 - 0 clippy warnings (enforced)
 
 **Next Up:**
-- Issue 012: Affine Integrity Sprint (runtime hardening)
 - Issue 013: Standard Library Primitives
 - Issue 014: `strata plan` + CLI Polish
 - Issue 015: Error Reporting Polish
@@ -402,5 +415,5 @@ was deferred, changing the dependency chain:
 ---
 
 **Last Updated:** February 2026
-**Current Version:** v0.0.11
-**Next Review:** After Issue 012 completion
+**Current Version:** v0.0.12
+**Next Review:** After Issue 013 completion

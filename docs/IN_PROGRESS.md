@@ -1,50 +1,67 @@
 # Strata: In Progress
 
 **Last Updated:** February 2026
-**Current Version:** v0.0.11
-**Current Focus:** Issue 012 — Affine Integrity Sprint
-**Progress:** Issues 001-010 + 011a complete
+**Current Version:** v0.0.12
+**Current Focus:** Issue 013 — Standard Library Primitives
+**Progress:** Issues 001-012 complete
 
 ---
 
 ## Current Status
 
-### Issue 012: Affine Integrity Sprint — PLANNING
+### Issue 012: Affine Integrity Sprint — COMPLETE ✅
 
-**Goal:** Harden the interpreter to enforce affine semantics at runtime
-(defense-in-depth). Even a Move Checker bug cannot lead to capability
-duplication.
+**Completed:** February 2026
 
-**What will be built:**
+Runtime defense-in-depth for affine semantics. The interpreter now enforces
+single-use independently of the static Move Checker. Even a Move Checker bug
+cannot lead to capability duplication at runtime.
+
+**What was built:**
 - `Value::Consumed` tombstone for moved values
-- `Env::move_out()` — destructive read for affine variables
-- Closure capture hollowing
-- Match scrutinee consumption
-- Scope-aware tombstoning (critical finding from adversarial review)
+- `Env::move_out()` — destructive read with scope-aware traversal
+- Recursive `is_affine()` for compound types (tuples, structs, variants)
+- Borrow exemption (no tombstoning through `&x`)
+- CAP-MOVE-RUNTIME error code with dual-span reporting
 
-**Why now:** The interpreter is the v0.1 runtime and the Golden Specification.
-It must be correct before we expand the stdlib (Issue 013).
-
-**v0.1 critical path:** 012 → 013 → 014 → 015
+**Post-012 cohort findings (deferred to v0.2+):**
+- CapToken with shared consumed state (`Rc<Cell>`) — eliminates alias escape class
+- Ownership-based pattern matching — `match_pattern` takes Value by ownership
+- Closure capture hollowing — when user-defined closures/lambdas are added
 
 ---
 
-### Issue Renumbering (Feb 2026)
+## Next Up
 
-After completing 011a, the roadmap was reorganized. Compilation (WASM/native)
-deferred to v0.2+, changing the dependency chain:
+### Issue 013: Standard Library Primitives
+**Status:** Planning
+**Depends on:** Issue 012 (COMPLETE)
 
-| Old | Old Title | New | New Title | Notes |
-|-----|-----------|-----|-----------|-------|
-| (new) | — | 012 | Affine Integrity Sprint | Runtime hardening |
-| 013 | Standard Library Primitives | 013 | (stays) | Removed cap bundles dep |
-| 014 | CLI Tooling | 014 | `strata plan` + CLI Polish | Partly shipped in 011a |
-| 015 | Error Reporting Polish | 015 | (stays) | No change |
-| 012 | Hierarchical Cap Bundles | 016 | (demoted) | Deferred to v0.2 |
+Expand beyond the 4 built-in host functions:
+- HTTP client (`http_get`, `http_post`)
+- File operations (`file_exists`, `list_dir`)
+- String utilities (`len`, `concat`, `to_string`)
+- JSON extraction (`parse_json`, `json_get`)
+- Time operations (`sleep`)
+
+All effectful operations automatically participate in tracing.
+
+### Issue 014: `strata plan` + CLI Polish
+**Depends on:** Issue 013
+
+### Issue 015: Error Reporting Polish
+**Can run in parallel with:** 013, 014
+
+**v0.1 critical path:** 013 → 014 → 015
 
 ---
 
 ### Previous Completions
+
+**Issue 012: Affine Integrity Sprint** (Feb 2026, v0.0.12)
+- Runtime tombstones, scope-aware destructive reads, recursive is_affine()
+- 507 tests at completion (14 new)
+- Cohort review: 3 fixes (recursive affinity, unwrap removal, dual-span errors)
 
 **Issue 011a: Traced Runtime** (Feb 2026, v0.0.11)
 - 5 phases + hardening, 41 new tests (493 total)
@@ -53,7 +70,6 @@ deferred to v0.2+, changing the dependency chain:
 
 **Issue 010: Affine Types / Linear Capabilities** (Feb 2026)
 - Kind system, move checker, single-use enforcement
-- 442 tests at completion
 
 **Issue 009: Capability Types** (Feb 2026)
 - Mandatory capability validation, zero-cap skip fix
@@ -68,13 +84,10 @@ deferred to v0.2+, changing the dependency chain:
 
 ## Development Lessons
 
-### Key Learnings from Issue 011a
-- **Single dispatch path**: Always use `dispatch_traced()` — never branch on tracer presence for dispatch logic. `TraceEmitter::disabled()` handles the no-output case.
-- **Position-aware dispatch**: Walk the extern fn's type signature to classify params as Cap vs Data. Don't filter by runtime `Value::Cap(_)` type.
-- **Replay before live**: Check replayer BEFORE live dispatch in the call path. Replayer takes priority.
-- **Security enforcement unconditional**: Missing ExternFnMeta is a hard error, not a graceful degradation.
-- **Tagged serialization**: Never serialize values without preserving type identity (Str vs Int).
-- **Scope-aware operations**: ANY Env operation targeting a specific binding must resolve through the full scope chain, never just the current scope.
+### Key Learnings from Issue 012
+- **Defense-in-depth must mirror ALL cases from the primary enforcement layer.** If `Ty::kind()` propagates through N type constructors, `Value::is_affine()` must propagate through the corresponding N value constructors.
+- **Defense-in-depth code must never panic.** Replace `.unwrap()` with `.ok_or_else()` for actionable error messages instead of crashes.
+- **Scope-aware operations are an architectural invariant.** Any Env operation targeting a binding must traverse the full scope chain, never just the current scope.
 
 ### Development Philosophy
 - **Soundness over speed** — A type system that lies is worse than no type system
@@ -90,9 +103,9 @@ deferred to v0.2+, changing the dependency chain:
 **Codebase:**
 - 4 crates (strata-ast, strata-parse, strata-types, strata-cli)
 - ~12,000+ lines of Rust code
-- 493 tests (all passing)
+- 507 tests (all passing)
 - 0 clippy warnings (enforced)
 
 **Velocity:**
-- Issues 001-010 + 011a: ~2.5 months
+- Issues 001-012: ~2.5 months
 - On track for v0.1 timeline

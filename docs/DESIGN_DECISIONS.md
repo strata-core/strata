@@ -827,3 +827,28 @@ For major decisions that need extensive analysis, create an ADR file instead:
 - Name: `adr-NNNN.md` where NNNN is a zero-padded number
 - Link from this doc: `**See:** [ADR-NNNN](adr/adr-NNNN.md)`
 - Keep this doc focused, use ADRs for deep dives
+
+---
+
+### Runtime Affine Enforcement (Issue 012)
+
+**Decision:** Tombstone-based destructive reads as defense-in-depth, with
+variant-based `is_affine()` (recursive into compound types).
+
+**Rationale:** Tombstones provide immediate runtime enforcement with minimal
+architectural disruption. The v0.1 approach catches the most dangerous bugs
+(bare cap duplication, compound-type duplication) while deferring the
+architecturally pure solution (CapToken) to v0.2 where it can be designed
+properly alongside affine closures and ownership-based pattern matching.
+
+**Alternatives considered:**
+- CapToken with shared consumed state (Rc<Cell>) — deferred to v0.2
+- Remove Clone from Value entirely — deferred to v0.3+
+- Type-threaded runtime affinity (pass resolved Ty through eval) — rejected,
+  too invasive for defense-in-depth layer
+
+See: ADR for CapToken design (to be created during v0.2 planning)
+
+**Status:** Locked in (v0.1)
+
+**Date:** February 2026
