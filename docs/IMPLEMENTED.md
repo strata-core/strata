@@ -1,7 +1,7 @@
 # Strata - Implemented Features
 
 > Last updated: February 2026
-> Status: Issues 001-010 complete
+> Status: Issues 001-010 + 011a complete
 
 ## ✅ Working Features
 
@@ -652,21 +652,103 @@ fn looped(fs: FsCap) -> () & {Fs} {
 
 ---
 
-### CLI (Issue 001, updated through 010)
+### Issue 011a: Traced Runtime (Complete)
+
+**Completed:** February 2026
+**Test Coverage:** 477 tests (25 new across 5 phases)
+
+**What was implemented:**
+
+**Phase 1: Extern-Only Borrowing (`&CapType`)**
+- `&T` syntax in extern fn params — borrow a capability without consuming it
+- `Ty::Ref(Box<Ty>)` — reference type, always `Kind::Unrestricted`
+- Move checker treats borrows as non-consuming (capability survives)
+- Restriction: `&T` only allowed in extern fn params (not regular fns, returns, let bindings)
+
+**Phase 2: Host Function Dispatch**
+- `HostRegistry` with built-in host functions: `read_file`, `write_file`, `now`, `random_int`
+- Capability injection: `fn main(fs: FsCap, time: TimeCap)` receives capabilities from runtime
+- `Value::Cap(CapKind)` and `Value::HostFn(String)` runtime values
+- Position-aware dispatch via `ExternFnMeta` (walks type signature, not runtime values)
+
+**Phase 3: Effect Trace Emission**
+- Streaming JSONL trace: every host fn call records effect, operation, capability access, inputs, output, duration
+- SHA-256 content hashing for outputs > 1KB (configurable via `--trace-full`)
+- `TraceEmitter` with `dispatch_traced()` — single dispatch path for all host calls
+- ISO 8601 timestamps without chrono dependency
+
+**Phase 4: Deterministic Replay**
+- `TraceReplayer` loads JSONL traces and substitutes recorded outputs
+- Validates operation names and inputs match the trace
+- `ReplayError` enum with structured mismatch reporting
+- `run_module_replay()` entry point with `verify_complete()` check
+
+**Phase 5: CLI Integration**
+- `strata run <file>` — execute program
+- `strata run <file> --trace <path>` — execute with audit trace (large values hashed)
+- `strata run <file> --trace-full <path>` — execute with replay-capable trace
+- `strata replay <trace-path> <file>` — replay trace against source
+- `strata replay <trace-path>` — print trace summary
+- `strata parse <file>` — dump AST (pretty or JSON)
+
+**What Works:**
+```strata
+extern fn read_file(fs: &FsCap, path: String) -> String & {Fs};
+extern fn write_file(fs: &FsCap, path: String, content: String) -> () & {Fs};
+extern fn now(time: &TimeCap) -> String & {Time};
+
+fn main(fs: FsCap, time: TimeCap) -> () & {Fs, Time} {
+    let config = read_file(&fs, "/tmp/config.txt");
+    let timestamp = now(&time);
+    write_file(&fs, "/tmp/output.txt", config);
+}
+```
+
+```bash
+# Run with trace
+strata run example.strata --trace trace.jsonl
+
+# Replay
+strata replay trace.jsonl example.strata
+```
+
+**Example Files:**
+- `examples/deploy.strata` — Full run-trace-replay demo
+- `examples/README.md` — Demo workflow documentation
+
+**Location:**
+- `crates/strata-cli/src/host.rs` — Host registry, trace types, TraceEmitter, TraceReplayer
+- `crates/strata-cli/src/eval.rs` — Evaluator with capability injection, trace threading, replay dispatch
+- `crates/strata-cli/src/main.rs` — CLI with run/replay/parse subcommands
+
+**Status:** Complete. End-to-end traced runtime with deterministic replay.
+
+---
+
+### CLI (Issue 001, updated through 011a)
 
 **Commands:**
 ```bash
+# Execute a program
+strata run file.strata
+
+# Execute with effect trace
+strata run file.strata --trace trace.jsonl
+
+# Execute with replay-capable trace (all values recorded)
+strata run file.strata --trace-full trace.jsonl
+
+# Replay a trace against source
+strata replay trace.jsonl file.strata
+
+# Print trace summary
+strata replay trace.jsonl
+
 # Parse and dump AST
-strata-cli path/to/file.strata
+strata parse file.strata
 
-# Pretty print
-strata-cli --format pretty file.strata
-
-# JSON output
-strata-cli --format json file.strata
-
-# Evaluate (calls main() and prints result)
-strata-cli --eval file.strata
+# JSON AST output
+strata parse file.strata --format json
 ```
 
 **Type Checking:**
@@ -687,8 +769,10 @@ strata-cli --eval file.strata
 - Tuple construction and destructuring
 - Struct construction and pattern matching
 - Enum variant construction and matching
+- Host function dispatch with capability injection
+- Effect trace emission and deterministic replay
 
-**Status:** Working for all implemented syntax. Type checking integrated.
+**Status:** Working for all implemented syntax. Full traced runtime integrated.
 
 ---
 
@@ -699,14 +783,15 @@ strata-cli --eval file.strata
 - Pipe operator: `x |> f |> g`
 
 **From Later Issues:**
-- WASM Runtime + Effect Traces (Issue 011) ← **NEXT**
 - Profile enforcement
 - Actors & supervision
 - Datalog/logic engine
-- Bytecode VM
-- Deterministic replay
+- Bytecode VM / WASM compilation
 - AOT compilation
 - WASI target
+- `--deny` capability flags (deny specific caps at runtime)
+- Network host functions (http_get, etc.)
+- Error handling / Result types in Strata
 
 ---
 
@@ -716,7 +801,7 @@ strata-cli --eval file.strata
 # Build all crates
 cargo build --workspace
 
-# Run all tests (442 tests)
+# Run all tests (477 tests)
 cargo test --workspace
 
 # Run with clippy (enforced in CI)
@@ -728,9 +813,14 @@ cargo test -p strata-parse
 # Run type tests
 cargo test -p strata-types
 
-# Try an example
-cargo run -p strata-cli -- examples/option.strata
-cargo run -p strata-cli -- --eval examples/option.strata
+# Run a program
+cargo run -p strata-cli -- run examples/deploy.strata
+
+# Run with trace
+cargo run -p strata-cli -- run examples/deploy.strata --trace /tmp/trace.jsonl
+
+# Parse an example
+cargo run -p strata-cli -- parse examples/option.strata
 ```
 
 ---
@@ -749,16 +839,17 @@ strata-ast       (no deps)
 ## Project Stats
 
 - **Crates:** 4 (ast, parse, types, cli)
-- **Total Tests:** 442 (parser: 48, types: 174, cli: 26, effects: 41, capabilities: 49, move_check: 37, others: 67)
-- **Lines of Code:** ~10,000+ (estimate)
-- **Issues Completed:** 10 + hardening (Parser, Effects, Type Scaffolding, Basic Type Checking, Functions, Blocks, ADTs, Security Hardening, Effect System, Capability Types, Affine Types, Pre-011 Hardening)
+- **Total Tests:** 477 (parser: 48, types: 174, cli: 26, host_integration: 21, cli_integration: 4, effects: 41, capabilities: 58, move_check: 38, others: 67)
+- **Lines of Code:** ~12,000+ (estimate)
+- **Issues Completed:** 10 + hardening + 011a (Parser, Effects, Type Scaffolding, Basic Type Checking, Functions, Blocks, ADTs, Security Hardening, Effect System, Capability Types, Affine Types, Pre-011 Hardening, Traced Runtime)
 - **Example Files:** 30+
 
 ---
 
 ## Next Up
 
-**Issue 011: WASM Runtime + Effect Traces**
-- Compile Strata to WASM
-- Runtime effect trace recording
-- Capability provisioning from runtime
+- Standard library functions (string manipulation, collections)
+- Network host functions (http_get, etc.)
+- Error handling / Result types
+- `--deny` capability flags for CLI
+- WASM compilation target

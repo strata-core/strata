@@ -80,6 +80,8 @@ pub enum InferError {
     EffectVarLimitExceeded { limit: u32 },
     /// Cyclic effect variable substitution
     EffectCycle { var: crate::effects::EffectVarId },
+    /// Reference type (&T) escaped its allowed position (extern fn params only)
+    RefEscape { ty: Ty, context: String, span: Span },
     /// Effect substitution chain too deep
     EffectChainTooDeep { depth: usize },
     /// Scheme instantiation arity mismatch (internal invariant violation)
@@ -442,6 +444,12 @@ impl InferCtx {
 
             // Path expression (enum constructor)
             Expr::PathExpr(path) => self.infer_path_expr(ctx, path),
+
+            // Borrow expression: &expr produces Ty::Ref(inner_ty)
+            Expr::Borrow(inner, _span) => {
+                let inner_ty = self.infer_expr_ctx(ctx, inner)?;
+                Ok(Ty::Ref(Box::new(inner_ty)))
+            }
         }
     }
 
@@ -489,6 +497,16 @@ impl InferCtx {
             } => {
                 // Infer the type of the value
                 let value_ty = self.infer_expr_ctx(ctx, value)?;
+
+                // Reject &T in let bindings — refs are second-class and can only
+                // appear at extern fn call sites, not stored in variables.
+                if !value_ty.is_first_class() {
+                    return Err(InferError::RefEscape {
+                        ty: value_ty,
+                        context: "let binding".to_string(),
+                        span: *span,
+                    });
+                }
 
                 // If there's a type annotation, add constraint
                 // (only allowed for simple identifier patterns)
@@ -1281,6 +1299,7 @@ fn substitute_type_vars(ty: &Ty, subst: &HashMap<TypeVarId, Ty>) -> Ty {
                 .map(|t| substitute_type_vars(t, subst))
                 .collect(),
         },
+        Ty::Ref(inner) => Ty::Ref(Box::new(substitute_type_vars(inner, subst))),
     }
 }
 
@@ -1332,6 +1351,11 @@ fn ty_from_type_expr(te: &strata_ast::ast::TypeExpr) -> Result<Ty, InferError> {
         // Tuple type annotations in block-level let bindings not yet supported.
         TypeExpr::Tuple(_, span) => Err(InferError::NotImplemented {
             msg: "Tuple types not yet implemented".to_string(),
+            span: *span,
+        }),
+        // Reference types are only allowed in extern function parameters
+        TypeExpr::Ref(_, span) => Err(InferError::NotImplemented {
+            msg: "Reference types (&T) are only allowed in extern function parameters".to_string(),
             span: *span,
         }),
     }

@@ -411,6 +411,15 @@ impl<'a> Parser<'a> {
     fn parse_type(&mut self) -> Result<TypeExpr> {
         let start = self.cur.span.start;
 
+        // Check for reference type: &T (but not effect annotation: & {Fs})
+        if matches!(self.cur.kind, TokKind::Ampersand) && !matches!(self.nxt.kind, TokKind::LBrace)
+        {
+            self.bump(); // consume &
+            let inner = self.parse_type()?;
+            let end = inner.span().end;
+            return Ok(TypeExpr::Ref(Box::new(inner), Span { start, end }));
+        }
+
         // Check if it's a function type: fn(T1, T2) -> R
         if matches!(self.cur.kind, TokKind::KwFn) {
             self.bump(); // consume 'fn'
@@ -1237,6 +1246,20 @@ impl<'a> Parser<'a> {
                 })
             }
 
+            // Borrow expression: &expr
+            TokKind::Ampersand => {
+                self.enter_nesting()?;
+                self.bump();
+                let result = self.parse_expr_bp(100);
+                self.exit_nesting();
+                let inner = result?;
+                let span = Span {
+                    start: tok_span.start,
+                    end: node_end(&inner),
+                };
+                Ok(Expr::Borrow(Box::new(inner), span))
+            }
+
             // primaries
             TokKind::Int(v) => {
                 self.bump();
@@ -1455,6 +1478,7 @@ fn node_start(e: &Expr) -> u32 {
         Expr::Tuple { span, .. } => span.start,
         Expr::StructExpr { span, .. } => span.start,
         Expr::PathExpr(path) => path.span.start,
+        Expr::Borrow(_, span) => span.start,
     }
 }
 
@@ -1473,5 +1497,6 @@ fn node_end(e: &Expr) -> u32 {
         Expr::Tuple { span, .. } => span.end,
         Expr::StructExpr { span, .. } => span.end,
         Expr::PathExpr(path) => path.span.end,
+        Expr::Borrow(_, span) => span.end,
     }
 }

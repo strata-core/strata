@@ -241,6 +241,7 @@ pub fn contains_capability(ty: &Ty) -> bool {
         }
         Ty::Tuple(tys) => tys.iter().any(contains_capability),
         Ty::List(ty) => contains_capability(ty),
+        Ty::Ref(inner) => contains_capability(inner),
     }
 }
 
@@ -262,6 +263,7 @@ pub fn find_capability_name(ty: &Ty) -> Option<String> {
             .or_else(|| find_capability_name(ret)),
         Ty::Tuple(tys) => tys.iter().find_map(find_capability_name),
         Ty::List(ty) => find_capability_name(ty),
+        Ty::Ref(inner) => find_capability_name(inner),
         Ty::Const(_) | Ty::Var(_) | Ty::Never => None,
     }
 }

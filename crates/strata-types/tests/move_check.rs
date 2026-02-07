@@ -520,6 +520,27 @@ fn closure_syntax_not_supported() {
     );
 }
 
+// ============================================================================
+// BORROW TESTS — borrowing does not consume, even in loops
+// ============================================================================
+
+#[test]
+fn borrow_in_loop_ok() {
+    // Borrowing inside a while loop is allowed — borrows are repeatable.
+    // (Consuming a cap in a loop would be an error, but borrowing is fine.)
+    check_ok(
+        r#"
+        extern fn check_status(net: &NetCap) -> Bool & {Net};
+        fn poll(net: NetCap) -> () & {Net} {
+            let mut done = false;
+            while !done {
+                done = check_status(&net);
+            }
+        }
+    "#,
+    );
+}
+
 // TEST: closure_capturing_cap_is_affine
 // When closures are added, a closure that captures a cap must be affine.
 // This means the closure can be defined once and called at most once.

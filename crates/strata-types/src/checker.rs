@@ -131,6 +131,10 @@ pub enum TypeError {
     },
     /// Capability used inside a loop (would be used multiple times)
     CapabilityUsedInLoop { name: String, used_at: Span },
+    /// Reference type (&T) escaped its allowed position (extern fn params only)
+    RefEscape { ty: Ty, context: String, span: Span },
+    /// Reference type (&T) found in ADT field definition
+    RefInAdtField { field: String, ty: Ty, span: Span },
 }
 
 impl std::fmt::Display for TypeError {
@@ -444,6 +448,22 @@ impl std::fmt::Display for TypeError {
                     name, used_at, name
                 )
             }
+            TypeError::RefEscape { ty, context, span } => {
+                write!(
+                    f,
+                    "reference type '{}' cannot escape to {} at {:?}; \
+                     &T is only allowed in extern function parameters",
+                    ty, context, span
+                )
+            }
+            TypeError::RefInAdtField { field, ty, span } => {
+                write!(
+                    f,
+                    "reference type '{}' cannot be stored in ADT field '{}' at {:?}; \
+                     &T is only allowed in extern function parameters",
+                    ty, field, span
+                )
+            }
         }
     }
 }
@@ -564,6 +584,10 @@ impl TypeChecker {
                             .iter()
                             .filter_map(|ty| match ty {
                                 Ty::Cap(kind) => Some(*kind),
+                                Ty::Ref(inner) => match inner.as_ref() {
+                                    Ty::Cap(kind) => Some(*kind),
+                                    _ => None,
+                                },
                                 _ => None,
                             })
                             .collect();
@@ -639,6 +663,18 @@ impl TypeChecker {
         let final_ty = subst
             .apply(&inferred_ty)
             .map_err(|e| subst_error_to_type_error(e, decl.span))?;
+
+        // ---- Settle point: reject &T escaping to let bindings ----
+        // After solving, the type may have resolved to contain Ty::Ref through
+        // inference (e.g., `let r = &fs;`). Refs are second-class — they cannot
+        // appear in let binding types.
+        if !final_ty.is_first_class() {
+            return Err(TypeError::RefEscape {
+                ty: final_ty,
+                context: format!("let binding '{}'", decl.name.text),
+                span: decl.span,
+            });
+        }
 
         // Generalize: free vars in type that aren't already in environment become ∀-bound
         use super::infer::ty::free_vars_env;
@@ -753,6 +789,19 @@ impl TypeChecker {
             .apply(&predeclared_ty)
             .map_err(|e| subst_error_to_type_error(e, decl.span))?;
 
+        // ---- Settle point: reject &T in resolved return type ----
+        // After solving, check that the return type doesn't contain Ty::Ref.
+        // This catches cases where &T propagates through inference into a return.
+        if let Ty::Arrow(_, ref resolved_ret, _) = final_fn_ty {
+            if !resolved_ret.is_first_class() {
+                return Err(TypeError::RefEscape {
+                    ty: resolved_ret.as_ref().clone(),
+                    context: format!("return type of '{}'", decl.name.text),
+                    span: decl.ret_ty.as_ref().map(|t| t.span()).unwrap_or(decl.span),
+                });
+            }
+        }
+
         // ---- Capability validation ----
         // After solving, check that the function has capability parameters for each
         // concrete effect in its resolved effect row. Every function with concrete
@@ -762,6 +811,10 @@ impl TypeChecker {
                 .iter()
                 .filter_map(|ty| match ty {
                     Ty::Cap(kind) => Some(*kind),
+                    Ty::Ref(inner) => match inner.as_ref() {
+                        Ty::Cap(kind) => Some(*kind),
+                        _ => None,
+                    },
                     _ => None,
                 })
                 .collect();
@@ -839,12 +892,31 @@ impl TypeChecker {
             param_tys.push(param_ty);
         }
 
+        // Reject &T in regular fn params
+        for (param, param_ty) in decl.params.iter().zip(param_tys.iter()) {
+            if matches!(param_ty, Ty::Ref(_)) {
+                return Err(TypeError::NotImplemented {
+                    msg: "Reference types (&T) are only allowed in extern function parameters"
+                        .to_string(),
+                    span: param.span,
+                });
+            }
+        }
+
         // Extract return type
         let ret_ty = if let Some(ref ty_expr) = decl.ret_ty {
             self.ty_from_type_expr(ty_expr)?
         } else {
             self.infer_ctx.fresh_var()
         };
+
+        // Reject &T in return type
+        if contains_ref(&ret_ty) {
+            return Err(TypeError::NotImplemented {
+                msg: "Reference types (&T) are not allowed in return types".to_string(),
+                span: decl.ret_ty.as_ref().map(|t| t.span()).unwrap_or(decl.span),
+            });
+        }
 
         // Convert effect annotation to EffectRow
         let eff = if let Some(ref effects) = decl.effects {
@@ -879,6 +951,26 @@ impl TypeChecker {
         } else {
             self.infer_ctx.fresh_var()
         };
+
+        // Reject &T in return type
+        if contains_ref(&ret_ty) {
+            return Err(TypeError::NotImplemented {
+                msg: "Reference types (&T) are not allowed in return types".to_string(),
+                span: decl.ret_ty.as_ref().map(|t| t.span()).unwrap_or(decl.span),
+            });
+        }
+
+        // Validate: &T in extern params must only wrap capability types
+        for (param, param_ty) in decl.params.iter().zip(param_tys.iter()) {
+            if let Ty::Ref(inner) = param_ty {
+                if !matches!(inner.as_ref(), Ty::Cap(_)) {
+                    return Err(TypeError::NotImplemented {
+                        msg: "Reference types (&T) are only allowed on capability types in extern function parameters".to_string(),
+                        span: param.span,
+                    });
+                }
+            }
+        }
 
         // Convert effect annotation (required for extern fns)
         let eff = if let Some(ref effects) = decl.effects {
@@ -951,10 +1043,20 @@ impl TypeChecker {
             .map(|(i, param)| (param.text.clone(), TypeVarId(i as u32)))
             .collect();
 
-        // Convert fields, checking for capabilities
+        // Convert fields, checking for references and capabilities
         let mut fields = Vec::new();
         for field in &def.fields {
             let ty = self.ty_from_type_expr_with_params(&field.ty, &type_param_map)?;
+
+            // Check for reference types in fields (check before capabilities since
+            // &FsCap would match both — Ref is the more specific/relevant error)
+            if contains_ref(&ty) {
+                return Err(TypeError::RefInAdtField {
+                    field: field.name.text.clone(),
+                    ty,
+                    span: field.span,
+                });
+            }
 
             // Check for capability types in fields
             if contains_capability(&ty) {
@@ -1026,6 +1128,16 @@ impl TypeChecker {
                     let mut field_tys = Vec::new();
                     for (i, te) in type_exprs.iter().enumerate() {
                         let ty = self.ty_from_type_expr_with_params(te, &type_param_map)?;
+
+                        // Check for reference types in variant payload (check before
+                        // capabilities since &FsCap matches both)
+                        if contains_ref(&ty) {
+                            return Err(TypeError::RefInAdtField {
+                                field: format!("{}::{}.{}", def.name.text, variant.name.text, i),
+                                ty,
+                                span: variant.span,
+                            });
+                        }
 
                         // Check for capability types in variant payload
                         if contains_capability(&ty) {
@@ -1152,6 +1264,7 @@ fn remap_type_vars(ty: &Ty, remap: &std::collections::HashMap<TypeVarId, Ty>) ->
             name: name.clone(),
             args: args.iter().map(|t| remap_type_vars(t, remap)).collect(),
         },
+        Ty::Ref(inner) => Ty::Ref(Box::new(remap_type_vars(inner, remap))),
     }
 }
 
@@ -1287,6 +1400,10 @@ impl TypeChecker {
 
                 Ok(Ty::tuple(elem_tys?))
             }
+            TypeExpr::Ref(inner, _span) => {
+                let inner_ty = self.ty_from_type_expr_with_params(inner, type_params)?;
+                Ok(Ty::Ref(Box::new(inner_ty)))
+            }
         }
     }
 
@@ -1389,6 +1506,7 @@ fn infer_error_to_type_error(err: super::infer::constraint::InferError) -> TypeE
             found: got_types,
             span: Span { start: 0, end: 0 },
         },
+        InferError::RefEscape { ty, context, span } => TypeError::RefEscape { ty, context, span },
     }
 }
 
@@ -1484,6 +1602,18 @@ fn validate_caps_against_effects(
         }
     }
     Ok(())
+}
+
+/// Check if a type contains any Ty::Ref (reference) anywhere in its structure.
+fn contains_ref(ty: &Ty) -> bool {
+    match ty {
+        Ty::Ref(_) => true,
+        Ty::Const(_) | Ty::Var(_) | Ty::Never | Ty::Cap(_) => false,
+        Ty::Arrow(params, ret, _) => params.iter().any(contains_ref) || contains_ref(ret),
+        Ty::Tuple(tys) => tys.iter().any(contains_ref),
+        Ty::List(inner) => contains_ref(inner),
+        Ty::Adt { args, .. } => args.iter().any(contains_ref),
+    }
 }
 
 /// Convert a SubstError to a checker TypeError with a span

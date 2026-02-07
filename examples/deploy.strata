@@ -1,0 +1,14 @@
+// deploy.strata — Demo: read config, stamp with time, write output
+//
+// Run:    strata run examples/deploy.strata --trace /tmp/strata-demo/trace.jsonl
+// Replay: strata replay /tmp/strata-demo/trace.jsonl examples/deploy.strata
+
+extern fn read_file(fs: &FsCap, path: String) -> String & {Fs};
+extern fn write_file(fs: &FsCap, path: String, content: String) -> () & {Fs};
+extern fn now(time: &TimeCap) -> String & {Time};
+
+fn main(fs: FsCap, time: TimeCap) -> () & {Fs, Time} {
+    let config = read_file(&fs, "/tmp/strata-demo/config.txt");
+    let timestamp = now(&time);
+    write_file(&fs, "/tmp/strata-demo/output.txt", config);
+}

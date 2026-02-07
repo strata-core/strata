@@ -400,6 +400,8 @@ impl<'a> MoveChecker<'a> {
                 Ty::Tuple(elems.iter().map(|e| self.resolve_expr_type(e)).collect())
             }
 
+            Expr::Borrow(inner, _) => Ty::Ref(Box::new(self.resolve_expr_type(inner))),
+
             // Literals, binary, unary, struct exprs, etc. are always unrestricted
             _ => Ty::unit(),
         }
@@ -585,6 +587,28 @@ impl<'a> MoveChecker<'a> {
                     }
                 }
             }
+
+            Expr::Borrow(inner, span) => {
+                // Borrow checks that the inner var is alive but does NOT consume it.
+                // No loop restriction — borrows are repeatable.
+                if let Expr::Var(ident) = inner.as_ref() {
+                    if let Some(id) = self.name_to_id.get(&ident.text) {
+                        if let Some(tracked) = self.tracked.get(id) {
+                            if let MoveState::Consumed(previous_span) = &tracked.state {
+                                self.errors.push(MoveError::AlreadyUsed {
+                                    name: ident.text.clone(),
+                                    used_at: *span,
+                                    previous_use: *previous_span,
+                                });
+                            }
+                            // No state change — borrow doesn't consume
+                        }
+                    }
+                } else {
+                    // Complex borrow expression — recurse
+                    self.check_expr(inner);
+                }
+            }
         }
     }
 
@@ -733,6 +757,11 @@ fn collect_var_mapping(
                 }
             }
         }
+        Ty::Ref(inner) => {
+            if let Ty::Ref(arg_inner) = arg {
+                collect_var_mapping(inner, arg_inner, bound_vars, mapping);
+            }
+        }
         _ => {}
     }
 }
@@ -762,6 +791,7 @@ fn apply_type_mapping(ty: &Ty, mapping: &HashMap<TypeVarId, Ty>) -> Ty {
                 .map(|t| apply_type_mapping(t, mapping))
                 .collect(),
         },
+        Ty::Ref(inner) => Ty::Ref(Box::new(apply_type_mapping(inner, mapping))),
     }
 }
 

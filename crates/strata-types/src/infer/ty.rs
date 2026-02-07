@@ -75,6 +75,9 @@ pub enum Ty {
     /// Never unifies with any type (as a subtype of all types).
     /// This prevents "unreachable code" unification failures.
     Never,
+    /// Reference (borrow) type: `&T`. Only used in extern fn params for
+    /// capability borrowing. Refs are unrestricted (can be used multiple times).
+    Ref(Box<Ty>),
 }
 
 impl Ty {
@@ -165,6 +168,24 @@ impl Ty {
         }
     }
 
+    /// Returns whether this type is first-class (can appear anywhere in programs).
+    ///
+    /// Non-first-class types like `Ty::Ref` are restricted to specific positions
+    /// (extern fn params only). This check runs AFTER solving/substitution to catch
+    /// cases where `&T` escapes through inference (e.g., `let r = &fs;`).
+    pub fn is_first_class(&self) -> bool {
+        match self {
+            Ty::Ref(_) => false,
+            Ty::Tuple(elems) => elems.iter().all(|e| e.is_first_class()),
+            Ty::List(inner) => inner.is_first_class(),
+            Ty::Adt { args, .. } => args.iter().all(|a| a.is_first_class()),
+            Ty::Arrow(params, ret, _) => {
+                params.iter().all(|p| p.is_first_class()) && ret.is_first_class()
+            }
+            _ => true,
+        }
+    }
+
     /// Returns the kind of this type.
     ///
     /// Capability types are `Affine` (single-use). All other types are
@@ -199,6 +220,8 @@ impl Ty {
                 }
             }
             Ty::List(inner) => inner.kind(),
+            // Refs are always unrestricted — borrowing doesn't consume
+            Ty::Ref(_) => Kind::Unrestricted,
             _ => Kind::Unrestricted,
         }
     }
@@ -263,6 +286,7 @@ impl fmt::Display for Ty {
             }
             Ty::Cap(kind) => write!(f, "{}", kind.type_name()),
             Ty::Never => write!(f, "!"),
+            Ty::Ref(inner) => write!(f, "&{}", inner),
         }
     }
 }
@@ -379,6 +403,7 @@ pub fn free_vars(ty: &Ty) -> HashSet<TypeVarId> {
             }
             set
         }
+        Ty::Ref(inner) => free_vars(inner),
     }
 }
 
@@ -412,6 +437,7 @@ pub fn free_effect_vars(ty: &Ty) -> HashSet<EffectVarId> {
             }
             set
         }
+        Ty::Ref(inner) => free_effect_vars(inner),
     }
 }
 
