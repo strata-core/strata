@@ -73,9 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn load_and_typecheck(
-    path: &str,
-) -> Result<strata_ast::ast::Module, Box<dyn std::error::Error>> {
+fn load_and_typecheck(path: &str) -> Result<strata_ast::ast::Module, Box<dyn std::error::Error>> {
     let src = std::fs::read_to_string(path)?;
 
     if src.len() > MAX_SOURCE_SIZE {
@@ -105,25 +103,25 @@ fn cmd_run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let module = load_and_typecheck(file)?;
 
-    let has_main_params = module.items.iter().any(|item| {
-        matches!(item, Item::Fn(d) if d.name.text == "main" && !d.params.is_empty())
-    });
+    let has_main_params = module
+        .items
+        .iter()
+        .any(|item| matches!(item, Item::Fn(d) if d.name.text == "main" && !d.params.is_empty()));
 
-    let has_main = module.items.iter().any(|item| {
-        matches!(item, Item::Fn(d) if d.name.text == "main")
-    });
+    let has_main = module
+        .items
+        .iter()
+        .any(|item| matches!(item, Item::Fn(d) if d.name.text == "main"));
 
     if let Some(trace_path) = trace_full {
         // Replay-capable trace: all values recorded
-        let writer: Box<dyn std::io::Write + Send> =
-            Box::new(std::fs::File::create(&trace_path)?);
+        let writer: Box<dyn std::io::Write + Send> = Box::new(std::fs::File::create(&trace_path)?);
         let result = strata_cli::eval::run_module_traced_full(&module, writer)?;
         print_result(&result, has_main);
         eprintln!("Trace written to {}", trace_path);
     } else if let Some(trace_path) = trace {
         // Audit trace: large values hashed
-        let writer: Box<dyn std::io::Write + Send> =
-            Box::new(std::fs::File::create(&trace_path)?);
+        let writer: Box<dyn std::io::Write + Send> = Box::new(std::fs::File::create(&trace_path)?);
         let result = strata_cli::eval::run_module_traced(&module, writer)?;
         print_result(&result, has_main);
         eprintln!("Trace written to {}", trace_path);
@@ -154,13 +152,9 @@ fn print_result(result: &strata_cli::eval::Value, _has_main: bool) {
     }
 }
 
-fn cmd_replay(
-    trace_path: &str,
-    file: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let trace_content = std::fs::read_to_string(trace_path).map_err(|e| {
-        anyhow::anyhow!("Failed to read trace file '{}': {}", trace_path, e)
-    })?;
+fn cmd_replay(trace_path: &str, file: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    let trace_content = std::fs::read_to_string(trace_path)
+        .map_err(|e| anyhow::anyhow!("Failed to read trace file '{}': {}", trace_path, e))?;
 
     match file {
         Some(source_path) => {
@@ -168,10 +162,7 @@ fn cmd_replay(
             let module = load_and_typecheck(source_path)?;
             strata_cli::eval::run_module_replay(&module, &trace_content)?;
 
-            let effect_count = trace_content
-                .lines()
-                .filter(|l| !l.is_empty())
-                .count();
+            let effect_count = trace_content.lines().filter(|l| !l.is_empty()).count();
             println!("Replay successful: {} effects replayed.", effect_count);
         }
         None => {
@@ -184,19 +175,56 @@ fn cmd_replay(
 }
 
 fn print_trace_summary(trace_content: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let entries: Vec<serde_json::Value> = trace_content
+    let records: Vec<serde_json::Value> = trace_content
         .lines()
         .filter(|l| !l.is_empty())
         .map(serde_json::from_str)
         .collect::<Result<_, _>>()?;
 
-    if entries.is_empty() {
+    if records.is_empty() {
         println!("Trace: empty (no effects recorded)");
         return Ok(());
     }
 
-    println!("Trace summary: {} effects", entries.len());
-    for entry in &entries {
+    // Extract effect entries (skip header/footer)
+    let mut effects = Vec::new();
+    let mut header_info = None;
+    let mut footer_info = None;
+
+    for record in &records {
+        match record.get("record").and_then(|r| r.as_str()) {
+            Some("header") => {
+                let version = record["schema_version"].as_str().unwrap_or("?");
+                let full = record["full_values"].as_bool().unwrap_or(false);
+                header_info = Some((version.to_string(), full));
+            }
+            Some("footer") => {
+                let status = record["program_status"].as_str().unwrap_or("?");
+                let trace_status = record["trace_status"].as_str().unwrap_or("?");
+                footer_info = Some((status.to_string(), trace_status.to_string()));
+            }
+            Some("effect") | None => {
+                // "effect" record or legacy format (no "record" field)
+                effects.push(record);
+            }
+            _ => {}
+        }
+    }
+
+    if let Some((version, full)) = &header_info {
+        println!(
+            "Trace schema: v{}, mode: {}",
+            version,
+            if *full {
+                "full (replay-capable)"
+            } else {
+                "audit (hashed)"
+            }
+        );
+    }
+
+    println!("Trace summary: {} effects", effects.len());
+    for entry in &effects {
         let seq = entry["seq"].as_u64().unwrap_or(0);
         let effect = entry["effect"].as_str().unwrap_or("?");
         let op = entry["operation"].as_str().unwrap_or("?");
@@ -207,6 +235,10 @@ fn print_trace_summary(trace_content: &str) -> Result<(), Box<dyn std::error::Er
             "  [{}] {}::{}    ({}) - {}, {}ms",
             seq, effect, op, access, status, duration
         );
+    }
+
+    if let Some((prog_status, trace_status)) = &footer_info {
+        println!("Program: {}, Trace: {}", prog_status, trace_status);
     }
 
     Ok(())

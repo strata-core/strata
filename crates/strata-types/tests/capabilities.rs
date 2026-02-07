@@ -1019,3 +1019,136 @@ fn borrow_non_cap_error() {
         "Expected ref-non-cap error, got: {err}"
     );
 }
+
+// ============================================================================
+// FIX 1: Ty::Ref second-class enforcement (post-solving settle points)
+// ============================================================================
+
+#[test]
+fn ref_in_let_binding_error() {
+    // &T cannot escape to a let binding through inference
+    let err = check_err(
+        r#"
+        extern fn read_file(fs: &FsCap, path: String) -> String & {Fs};
+        fn bad(fs: FsCap) -> () & {Fs} {
+            let r = &fs;
+            read_file(r, "test")
+        }
+    "#,
+    );
+    assert!(
+        err.contains("reference type") && err.contains("cannot escape"),
+        "Expected RefEscape error for let binding, got: {err}"
+    );
+}
+
+#[test]
+fn ref_in_return_type_error() {
+    // &T cannot appear in a function's return type
+    let err = check_err(
+        r#"
+        extern fn read_file(fs: &FsCap, path: String) -> String & {Fs};
+        fn bad(fs: FsCap) -> &FsCap & {} {
+            &fs
+        }
+    "#,
+    );
+    assert!(
+        err.contains("Reference types") || err.contains("reference type"),
+        "Expected ref-in-return error, got: {err}"
+    );
+}
+
+#[test]
+fn ref_in_strata_fn_param_error() {
+    // &T is rejected in regular fn params (declared)
+    let err = check_err(
+        r#"
+        fn bad(fs: &FsCap) -> () & {} {
+            ()
+        }
+    "#,
+    );
+    assert!(
+        err.contains("only allowed in extern") || err.contains("Reference types"),
+        "Expected ref-in-param error, got: {err}"
+    );
+}
+
+#[test]
+fn ref_through_identity_fn_error() {
+    // &T propagating through a generic identity function should be caught
+    let err = check_err(
+        r#"
+        fn id(x: Int) -> Int { x }
+        extern fn read_file(fs: &FsCap, path: String) -> String & {Fs};
+        fn bad(fs: FsCap) -> () & {Fs} {
+            let r = &fs;
+            ()
+        }
+    "#,
+    );
+    assert!(
+        err.contains("reference type") && err.contains("cannot escape"),
+        "Expected RefEscape error for ref through inference, got: {err}"
+    );
+}
+
+#[test]
+fn ref_in_tuple_error() {
+    // &T nested in a tuple should be caught by is_first_class
+    let err = check_err(
+        r#"
+        extern fn read_file(fs: &FsCap, path: String) -> String & {Fs};
+        fn bad(fs: FsCap) -> () & {Fs} {
+            let pair = (&fs, 42);
+            ()
+        }
+    "#,
+    );
+    assert!(
+        err.contains("reference type") && err.contains("cannot escape"),
+        "Expected RefEscape error for tuple with ref, got: {err}"
+    );
+}
+
+#[test]
+fn borrow_at_extern_call_site_ok() {
+    // Borrowing at the extern call site is the correct pattern — should succeed
+    check_ok(
+        r#"
+        extern fn read_file(fs: &FsCap, path: String) -> String & {Fs};
+        fn good(fs: FsCap) -> String & {Fs} {
+            read_file(&fs, "test")
+        }
+    "#,
+    );
+}
+
+#[test]
+fn ref_in_struct_field_error() {
+    // &T in struct field definitions is rejected
+    let err = check_err(
+        r#"
+        struct Bad { fs: &FsCap }
+    "#,
+    );
+    assert!(
+        err.contains("reference type") && err.contains("ADT field"),
+        "Expected RefInAdtField error for struct, got: {err}"
+    );
+}
+
+#[test]
+fn ref_in_enum_variant_error() {
+    // &T in enum variant payloads is rejected
+    let err = check_err(
+        r#"
+        enum Bad { WithRef(&FsCap) }
+    "#,
+    );
+    assert!(
+        err.contains("reference type") && err.contains("ADT field"),
+        "Expected RefInAdtField error for enum, got: {err}"
+    );
+}

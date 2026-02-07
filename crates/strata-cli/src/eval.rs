@@ -13,8 +13,7 @@ use strata_ast::ast::{
 use strata_types::CapKind;
 
 use crate::host::{
-    serialize_value, ExternFnMeta, HostRegistry, ParamKind, ReplayError, TraceEmitter,
-    TraceReplayer,
+    ExternFnMeta, HostRegistry, ParamKind, ReplayError, TraceEmitter, TraceReplayer, TraceValue,
 };
 
 /// Maximum call depth to prevent stack overflow from deep recursion
@@ -412,16 +411,17 @@ fn run_module_inner(
                     name: param.name.text.clone(),
                 });
             }
-            registry.register_extern_meta(
-                &decl.name.text,
-                ExternFnMeta { params },
-            );
+            registry.register_extern_meta(&decl.name.text, ExternFnMeta { params });
         }
     }
 
     let registry = Arc::new(registry);
 
-    let tracer = trace_writer.map(|w| Arc::new(Mutex::new(TraceEmitter::new(w, full_values))));
+    let tracer = trace_writer
+        .map(|w| TraceEmitter::new(w, full_values))
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("{}", e))?
+        .map(|t| Arc::new(Mutex::new(t)));
 
     let mut env = Env::with_host_registry(registry);
     if let Some(t) = tracer {
@@ -536,9 +536,22 @@ fn run_module_inner(
             call_env.define(param.clone(), value, false);
         }
 
-        let result = eval_block(&mut call_env, &body)?;
+        let result = eval_block(&mut call_env, &body);
         call_env.pop_scope()?;
-        Ok(result.into_value())
+
+        // Finalize the trace (write footer) regardless of success/error.
+        // If program succeeded but finalize fails, propagate the write error.
+        // If program already errored, prioritize the program error.
+        let program_status = if result.is_ok() { "success" } else { "error" };
+        if let Some(tracer) = &env.tracer {
+            let mut t = tracer.lock().unwrap();
+            let fin = t.finalize(program_status);
+            if result.is_ok() {
+                fin.map_err(|e| anyhow::anyhow!("{}", e))?;
+            }
+        }
+
+        Ok(result?.into_value())
     } else {
         bail!("main is not a function")
     }
@@ -564,8 +577,7 @@ fn extract_cap_info(ty: &strata_ast::ast::TypeExpr) -> (bool, Option<String>) {
 pub fn run_module_replay(m: &Module, trace_jsonl: &str) -> Result<Value> {
     use strata_ast::ast::Item;
 
-    let replayer = TraceReplayer::from_jsonl(trace_jsonl)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let replayer = TraceReplayer::from_jsonl(trace_jsonl).map_err(|e| anyhow::anyhow!("{}", e))?;
     let replayer = Arc::new(Mutex::new(replayer));
 
     // We still need a registry for ExternFnMeta (position-aware input building),
@@ -709,26 +721,27 @@ pub fn run_module_replay(m: &Module, trace_jsonl: &str) -> Result<Value> {
     Ok(result)
 }
 
-/// Build the inputs JSON object for replay matching, using ExternFnMeta
+/// Build the inputs map for replay matching, using ExternFnMeta
 /// to identify data params by position.
-fn build_replay_inputs(env: &Env, name: &str, all_args: &[Value]) -> serde_json::Value {
+fn build_replay_inputs(
+    env: &Env,
+    name: &str,
+    all_args: &[Value],
+) -> std::collections::BTreeMap<String, TraceValue> {
     if let Some(registry) = &env.host_registry {
         if let Some(meta) = registry.get_extern_meta(name) {
-            let mut inputs = serde_json::Map::new();
+            let mut inputs = std::collections::BTreeMap::new();
             for (i, param) in meta.params.iter().enumerate() {
                 if let ParamKind::Data { name } = param {
                     if let Some(val) = all_args.get(i) {
-                        inputs.insert(
-                            name.clone(),
-                            serde_json::Value::String(serialize_value(val)),
-                        );
+                        inputs.insert(name.clone(), TraceValue::from_value(val));
                     }
                 }
             }
-            return serde_json::Value::Object(inputs);
+            return inputs;
         }
     }
-    serde_json::Value::Object(serde_json::Map::new())
+    std::collections::BTreeMap::new()
 }
 
 /// Evaluate an expression
@@ -1174,10 +1187,9 @@ fn eval_call_inner(env: &mut Env, callee: &Expr, args: &[Expr]) -> Result<Contro
         }
 
         // Live mode: dispatch to real host function
-        let registry = env
-            .host_registry
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("no host registry available for extern fn '{}'", name))?;
+        let registry = env.host_registry.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("no host registry available for extern fn '{}'", name)
+        })?;
 
         // Single dispatch path: always use position-aware dispatch_traced().
         // TraceEmitter::disabled() handles the no-output case.

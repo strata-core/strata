@@ -5,7 +5,7 @@
 //! trace emission: every host call records effect, operation, capability
 //! access, inputs, output (with SHA-256 hashing), and duration.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 
 use strata_types::CapKind;
@@ -23,6 +23,8 @@ pub enum HostError {
     IoError(String),
     /// General runtime error
     RuntimeError(String),
+    /// Trace write failure — execution must abort
+    TraceWriteError(String),
 }
 
 impl std::fmt::Display for HostError {
@@ -32,6 +34,9 @@ impl std::fmt::Display for HostError {
             HostError::TypeError(msg) => write!(f, "type error: {}", msg),
             HostError::IoError(msg) => write!(f, "I/O error: {}", msg),
             HostError::RuntimeError(msg) => write!(f, "runtime error: {}", msg),
+            HostError::TraceWriteError(msg) => {
+                write!(f, "trace write error (execution aborted): {}", msg)
+            }
         }
     }
 }
@@ -42,6 +47,59 @@ impl std::error::Error for HostError {}
 // Trace data types
 // ---------------------------------------------------------------------------
 
+/// Tagged trace value — preserves type information across serialization.
+///
+/// Unlike the previous untyped `serialize_value()` approach, this enum
+/// round-trips cleanly: `Int(42)` stays `Int(42)`, not ambiguous `"42"`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "t", content = "v")]
+pub enum TraceValue {
+    Int(i64),
+    Float(f64),
+    Str(String),
+    Bool(bool),
+    Unit,
+}
+
+impl TraceValue {
+    /// Convert a runtime Value to a TraceValue.
+    ///
+    /// Panics on non-data values (Cap, HostFn, etc.) — those should never
+    /// appear in trace inputs or outputs.
+    pub fn from_value(val: &Value) -> Self {
+        match val {
+            Value::Int(n) => TraceValue::Int(*n),
+            Value::Float(f) => TraceValue::Float(*f),
+            Value::Str(s) => TraceValue::Str(s.clone()),
+            Value::Bool(b) => TraceValue::Bool(*b),
+            Value::Unit => TraceValue::Unit,
+            other => TraceValue::Str(format!("{}", other)),
+        }
+    }
+
+    /// Convert a TraceValue back to a runtime Value.
+    pub fn to_value(&self) -> Value {
+        match self {
+            TraceValue::Int(n) => Value::Int(*n),
+            TraceValue::Float(f) => Value::Float(*f),
+            TraceValue::Str(s) => Value::Str(s.clone()),
+            TraceValue::Bool(b) => Value::Bool(*b),
+            TraceValue::Unit => Value::Unit,
+        }
+    }
+
+    /// Serialize to a string for hashing purposes.
+    fn to_hash_string(&self) -> String {
+        match self {
+            TraceValue::Int(n) => n.to_string(),
+            TraceValue::Float(f) => f.to_string(),
+            TraceValue::Str(s) => s.clone(),
+            TraceValue::Bool(b) => b.to_string(),
+            TraceValue::Unit => "()".to_string(),
+        }
+    }
+}
+
 /// A single trace entry recording one host function call.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct TraceEntry {
@@ -50,9 +108,13 @@ pub struct TraceEntry {
     pub effect: String,
     pub operation: String,
     pub capability: CapRef,
-    pub inputs: serde_json::Value,
+    pub inputs: BTreeMap<String, TraceValue>,
     pub output: TraceOutput,
     pub duration_ms: u64,
+    /// Whether all values are stored (true) or large values are hashed (false).
+    /// Replay requires full_values=true.
+    #[serde(default)]
+    pub full_values: bool,
 }
 
 /// Reference to the capability used in a host call.
@@ -67,9 +129,51 @@ pub struct CapRef {
 pub struct TraceOutput {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
+    pub value: Option<TraceValue>,
     pub value_hash: String,
     pub value_size: usize,
+}
+
+// ---------------------------------------------------------------------------
+// TraceRecord — versioned trace envelope
+// ---------------------------------------------------------------------------
+
+/// Current trace schema version.
+pub const TRACE_SCHEMA_VERSION: &str = "0.1";
+
+/// A trace record in the JSONL stream. Tagged enum wrapping header, effect
+/// entries, and footer for schema versioning and completeness detection.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "record")]
+pub enum TraceRecord {
+    /// First line: schema version and metadata.
+    #[serde(rename = "header")]
+    Header(TraceHeader),
+    /// Effect entry: one host function call.
+    #[serde(rename = "effect")]
+    Effect(TraceEntry),
+    /// Last line: summary and completion status.
+    #[serde(rename = "footer")]
+    Footer(TraceFooter),
+}
+
+/// Trace header — first line of the JSONL stream.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct TraceHeader {
+    pub schema_version: String,
+    pub timestamp: String,
+    pub full_values: bool,
+}
+
+/// Trace footer — last line of the JSONL stream.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct TraceFooter {
+    pub timestamp: String,
+    pub effect_count: u64,
+    /// "complete" if finalize() was called normally, "incomplete" otherwise.
+    pub trace_status: String,
+    /// "success" or "error".
+    pub program_status: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -78,9 +182,12 @@ pub struct TraceOutput {
 
 /// Emits structured JSONL trace entries for host function calls.
 ///
-/// When created with a writer, each `emit()` serializes a `TraceEntry` as
-/// one JSON line. When disabled (no writer), calls are counted but nothing
-/// is written.
+/// Each trace is a stream of `TraceRecord` entries:
+/// 1. Header (schema version, start time)
+/// 2. Effect entries (one per host fn call)
+/// 3. Footer (effect count, completion status)
+///
+/// Call `finalize()` when the program completes to write the footer.
 pub struct TraceEmitter {
     seq: u64,
     writer: Option<Box<dyn Write + Send>>,
@@ -107,12 +214,24 @@ impl TraceEmitter {
     /// When `full_values` is true, all output values are recorded regardless
     /// of size (for replay-capable traces). When false, values > 1KB are
     /// replaced with their SHA-256 hash.
-    pub fn new(writer: Box<dyn Write + Send>, full_values: bool) -> Self {
-        Self {
+    ///
+    /// Emits a header record immediately. Returns error if header write fails.
+    pub fn new(mut writer: Box<dyn Write + Send>, full_values: bool) -> Result<Self, HostError> {
+        // Write header as first record
+        let header = TraceRecord::Header(TraceHeader {
+            schema_version: TRACE_SCHEMA_VERSION.to_string(),
+            timestamp: now_iso8601(),
+            full_values,
+        });
+        let json = serde_json::to_string(&header)
+            .map_err(|e| HostError::TraceWriteError(format!("serialize header: {}", e)))?;
+        writeln!(writer, "{}", json)
+            .map_err(|e| HostError::TraceWriteError(format!("write header: {}", e)))?;
+        Ok(Self {
             seq: 0,
             writer: Some(writer),
             full_values,
-        }
+        })
     }
 
     /// Create a disabled trace emitter (no output).
@@ -136,13 +255,40 @@ impl TraceEmitter {
         s
     }
 
-    /// Emit a trace entry as a JSONL line.
-    pub fn emit(&mut self, entry: TraceEntry) {
+    /// Emit a trace entry as a JSONL line, wrapped in TraceRecord::Effect.
+    ///
+    /// Returns error if serialization or writing fails — caller must abort.
+    pub fn emit(&mut self, entry: TraceEntry) -> Result<(), HostError> {
         if let Some(ref mut w) = self.writer {
-            if let Ok(json) = serde_json::to_string(&entry) {
-                let _ = writeln!(w, "{}", json);
-            }
+            let record = TraceRecord::Effect(entry);
+            let json = serde_json::to_string(&record)
+                .map_err(|e| HostError::TraceWriteError(format!("serialize effect: {}", e)))?;
+            writeln!(w, "{}", json)
+                .map_err(|e| HostError::TraceWriteError(format!("write effect: {}", e)))?;
         }
+        Ok(())
+    }
+
+    /// Write the footer record and flush. Call this when the program completes.
+    ///
+    /// `program_status` should be "success" or "error".
+    /// Returns error if serialization, writing, or flushing fails.
+    pub fn finalize(&mut self, program_status: &str) -> Result<(), HostError> {
+        if let Some(ref mut w) = self.writer {
+            let footer = TraceRecord::Footer(TraceFooter {
+                timestamp: now_iso8601(),
+                effect_count: self.seq,
+                trace_status: "complete".to_string(),
+                program_status: program_status.to_string(),
+            });
+            let json = serde_json::to_string(&footer)
+                .map_err(|e| HostError::TraceWriteError(format!("serialize footer: {}", e)))?;
+            writeln!(w, "{}", json)
+                .map_err(|e| HostError::TraceWriteError(format!("write footer: {}", e)))?;
+            w.flush()
+                .map_err(|e| HostError::TraceWriteError(format!("flush trace: {}", e)))?;
+        }
+        Ok(())
     }
 }
 
@@ -254,7 +400,7 @@ impl HostRegistry {
         let mut cap_access = String::new();
         let mut effect_str = String::new();
         let mut data_args = Vec::new();
-        let mut inputs = serde_json::Map::new();
+        let mut inputs = BTreeMap::new();
 
         let meta = meta.ok_or_else(|| {
             HostError::RuntimeError(format!(
@@ -267,16 +413,12 @@ impl HostRegistry {
             match param {
                 ParamKind::Cap { kind, borrowed } => {
                     cap_kind_str = kind.type_name().to_string();
-                    cap_access =
-                        if *borrowed { "borrow" } else { "consume" }.to_string();
+                    cap_access = if *borrowed { "borrow" } else { "consume" }.to_string();
                     effect_str = format!("{:?}", kind.gates_effect());
                 }
                 ParamKind::Data { name } => {
                     if let Some(val) = all_args.get(i) {
-                        inputs.insert(
-                            name.clone(),
-                            serde_json::Value::String(serialize_value(val)),
-                        );
+                        inputs.insert(name.clone(), TraceValue::from_value(val));
                         data_args.push(val.clone());
                     }
                 }
@@ -290,23 +432,30 @@ impl HostRegistry {
         let full = tracer.full_values();
         let (status, output_value, output_hash, output_size) = match &result {
             Ok(val) => {
-                let serialized = serialize_value(val);
-                let hash = sha256_hex(&serialized);
-                let size = serialized.len();
-                let value = if full || size <= 1024 {
-                    Some(serialized)
-                } else {
-                    None
-                };
+                let tv = TraceValue::from_value(val);
+                let hash_str = tv.to_hash_string();
+                let hash = sha256_hex(&hash_str);
+                let size = hash_str.len();
+                let value = if full || size <= 1024 { Some(tv) } else { None };
                 ("ok", value, hash, size)
             }
             Err(e) => {
                 let err_str = e.to_string();
                 let hash = sha256_hex(&err_str);
                 let size = err_str.len();
-                ("error", Some(err_str), hash, size)
+                ("error", Some(TraceValue::Str(err_str)), hash, size)
             }
         };
+
+        // In audit mode (not full_values), hash large input values
+        if !full {
+            for tv in inputs.values_mut() {
+                let s = tv.to_hash_string();
+                if s.len() > 1024 {
+                    *tv = TraceValue::Str(sha256_hex(&s));
+                }
+            }
+        }
 
         let seq = tracer.next_seq();
         tracer.emit(TraceEntry {
@@ -318,7 +467,7 @@ impl HostRegistry {
                 kind: cap_kind_str,
                 access: cap_access,
             },
-            inputs: serde_json::Value::Object(inputs),
+            inputs,
             output: TraceOutput {
                 status: status.to_string(),
                 value: output_value,
@@ -326,7 +475,8 @@ impl HostRegistry {
                 value_size: output_size,
             },
             duration_ms: duration.as_millis() as u64,
-        });
+            full_values: full,
+        })?;
 
         result
     }
@@ -366,6 +516,8 @@ pub enum ReplayError {
     ReplayedError(String),
     /// Unknown status in trace entry.
     UnknownStatus(String),
+    /// Trace was recorded in audit mode and cannot be replayed.
+    NotReplayable { seq: u64, reason: String },
     /// JSONL parse error.
     ParseError(usize, String),
     /// I/O error reading trace file.
@@ -414,6 +566,13 @@ impl std::fmt::Display for ReplayError {
             ReplayError::UnknownStatus(s) => {
                 write!(f, "replay: unknown status '{}' in trace", s)
             }
+            ReplayError::NotReplayable { seq, reason } => {
+                write!(
+                    f,
+                    "replay: trace entry at seq {} is not replayable: {}",
+                    seq, reason
+                )
+            }
             ReplayError::ParseError(line, msg) => {
                 write!(f, "replay: parse error at line {}: {}", line, msg)
             }
@@ -430,21 +589,78 @@ impl std::error::Error for ReplayError {}
 pub struct TraceReplayer {
     entries: Vec<TraceEntry>,
     cursor: usize,
+    trace_complete: bool,
 }
 
 impl TraceReplayer {
     /// Load a trace from JSONL content (one JSON object per line).
+    ///
+    /// Parses the `TraceRecord` envelope, extracts effect entries, and
+    /// validates the header for replay capability.
     pub fn from_jsonl(content: &str) -> Result<Self, ReplayError> {
-        let entries: Vec<TraceEntry> = content
-            .lines()
-            .filter(|l| !l.is_empty())
-            .enumerate()
-            .map(|(i, line)| {
-                serde_json::from_str(line)
-                    .map_err(|e| ReplayError::ParseError(i, e.to_string()))
-            })
-            .collect::<Result<_, _>>()?;
-        Ok(Self { entries, cursor: 0 })
+        let mut entries = Vec::new();
+        let mut saw_header = false;
+        let mut saw_footer = false;
+
+        for (i, line) in content.lines().filter(|l| !l.is_empty()).enumerate() {
+            // Try to parse as TraceRecord first (versioned format)
+            if let Ok(record) = serde_json::from_str::<TraceRecord>(line) {
+                match record {
+                    TraceRecord::Header(h) => {
+                        saw_header = true;
+                        // Reject unknown schema versions
+                        if h.schema_version != TRACE_SCHEMA_VERSION {
+                            return Err(ReplayError::NotReplayable {
+                                seq: 0,
+                                reason: format!(
+                                    "unsupported trace schema version '{}' (expected '{}')",
+                                    h.schema_version, TRACE_SCHEMA_VERSION
+                                ),
+                            });
+                        }
+                        if !h.full_values {
+                            return Err(ReplayError::NotReplayable {
+                                seq: 0,
+                                reason: "trace was recorded with --trace (audit mode). \
+                                         Re-run with --trace-full for replay-capable traces"
+                                    .to_string(),
+                            });
+                        }
+                    }
+                    TraceRecord::Effect(entry) => {
+                        entries.push(entry);
+                    }
+                    TraceRecord::Footer(_) => {
+                        saw_footer = true;
+                    }
+                }
+            } else {
+                // Fallback: try parsing as a bare TraceEntry (pre-versioning format)
+                let entry: TraceEntry = serde_json::from_str(line)
+                    .map_err(|e| ReplayError::ParseError(i, e.to_string()))?;
+
+                // Reject audit-mode entries
+                if !entry.full_values {
+                    return Err(ReplayError::NotReplayable {
+                        seq: entry.seq,
+                        reason: "trace was recorded with --trace (audit mode). \
+                                 Re-run with --trace-full for replay-capable traces"
+                            .to_string(),
+                    });
+                }
+                entries.push(entry);
+            }
+        }
+
+        // If we saw a header, this is a versioned trace — good
+        // If not, it's a legacy trace (pre-versioning) — still works
+        let _ = saw_header;
+
+        Ok(Self {
+            entries,
+            cursor: 0,
+            trace_complete: saw_footer,
+        })
     }
 
     /// Replay the next extern call. Validates operation and inputs match
@@ -452,7 +668,7 @@ impl TraceReplayer {
     pub fn next(
         &mut self,
         operation: &str,
-        inputs: &serde_json::Value,
+        inputs: &BTreeMap<String, TraceValue>,
     ) -> Result<Value, ReplayError> {
         let entry = self
             .entries
@@ -471,8 +687,8 @@ impl TraceReplayer {
             return Err(ReplayError::InputMismatch {
                 operation: operation.to_string(),
                 seq: self.cursor as u64,
-                expected: entry.inputs.clone(),
-                actual: inputs.clone(),
+                expected: serde_json::to_value(&entry.inputs).unwrap_or_default(),
+                actual: serde_json::to_value(inputs).unwrap_or_default(),
             });
         }
 
@@ -480,21 +696,23 @@ impl TraceReplayer {
 
         match entry.output.status.as_str() {
             "ok" => {
-                let value_str = entry.output.value.as_ref().ok_or_else(|| {
-                    ReplayError::MissingValue {
+                let tv = entry
+                    .output
+                    .value
+                    .as_ref()
+                    .ok_or_else(|| ReplayError::MissingValue {
                         operation: operation.to_string(),
                         seq: (self.cursor - 1) as u64,
                         value_size: entry.output.value_size,
-                    }
-                })?;
-                Ok(deserialize_value(value_str))
+                    })?;
+                Ok(tv.to_value())
             }
             "error" => {
                 let err_msg = entry
                     .output
                     .value
                     .as_ref()
-                    .cloned()
+                    .map(|tv| tv.to_hash_string())
                     .unwrap_or_else(|| "unknown error".to_string());
                 Err(ReplayError::ReplayedError(err_msg))
             }
@@ -512,34 +730,15 @@ impl TraceReplayer {
             Ok(())
         }
     }
+
+    /// Whether the trace included a footer record (indicating clean completion).
+    /// A missing footer means the trace may be truncated.
+    pub fn is_trace_complete(&self) -> bool {
+        self.trace_complete
+    }
 }
 
-/// Deserialize a trace value string back into a runtime Value.
-///
-/// This is a best-effort inverse of serialize_value(). Since the trace
-/// format is lossy (all values become strings), we attempt to parse
-/// Int, Float, Bool, and Unit, falling back to String.
-fn deserialize_value(s: &str) -> Value {
-    if s == "()" {
-        return Value::Unit;
-    }
-    if s == "true" {
-        return Value::Bool(true);
-    }
-    if s == "false" {
-        return Value::Bool(false);
-    }
-    if let Ok(n) = s.parse::<i64>() {
-        return Value::Int(n);
-    }
-    if let Ok(f) = s.parse::<f64>() {
-        // Only treat as float if it contains a dot (avoid "42" -> 42.0)
-        if s.contains('.') {
-            return Value::Float(f);
-        }
-    }
-    Value::Str(s.to_string())
-}
+// Note: deserialize_value() removed in Fix 2 — replaced by TraceValue::to_value().
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -553,17 +752,7 @@ fn sha256_hex(data: &str) -> String {
     format!("sha256:{:x}", hasher.finalize())
 }
 
-/// Serialize a runtime Value to a compact string for trace output.
-pub fn serialize_value(val: &Value) -> String {
-    match val {
-        Value::Str(s) => s.clone(),
-        Value::Int(n) => n.to_string(),
-        Value::Float(f) => f.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Unit => "()".to_string(),
-        other => format!("{}", other),
-    }
-}
+// Note: serialize_value() removed in Fix 2 — replaced by TraceValue::from_value().
 
 /// Produce an ISO 8601 UTC timestamp without external dependencies.
 ///
@@ -608,7 +797,11 @@ fn now_iso8601() -> String {
 fn host_read_file(args: &[Value], _tracer: &mut TraceEmitter) -> Result<Value, HostError> {
     let path = match args.first() {
         Some(Value::Str(s)) => s,
-        _ => return Err(HostError::TypeError("read_file: expected String path".into())),
+        _ => {
+            return Err(HostError::TypeError(
+                "read_file: expected String path".into(),
+            ))
+        }
     };
     match std::fs::read_to_string(path) {
         Ok(content) => Ok(Value::Str(content)),
@@ -619,7 +812,11 @@ fn host_read_file(args: &[Value], _tracer: &mut TraceEmitter) -> Result<Value, H
 fn host_write_file(args: &[Value], _tracer: &mut TraceEmitter) -> Result<Value, HostError> {
     let path = match args.first() {
         Some(Value::Str(s)) => s,
-        _ => return Err(HostError::TypeError("write_file: expected String path".into())),
+        _ => {
+            return Err(HostError::TypeError(
+                "write_file: expected String path".into(),
+            ))
+        }
     };
     let content = match args.get(1) {
         Some(Value::Str(s)) => s,

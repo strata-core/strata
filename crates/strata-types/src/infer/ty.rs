@@ -168,6 +168,24 @@ impl Ty {
         }
     }
 
+    /// Returns whether this type is first-class (can appear anywhere in programs).
+    ///
+    /// Non-first-class types like `Ty::Ref` are restricted to specific positions
+    /// (extern fn params only). This check runs AFTER solving/substitution to catch
+    /// cases where `&T` escapes through inference (e.g., `let r = &fs;`).
+    pub fn is_first_class(&self) -> bool {
+        match self {
+            Ty::Ref(_) => false,
+            Ty::Tuple(elems) => elems.iter().all(|e| e.is_first_class()),
+            Ty::List(inner) => inner.is_first_class(),
+            Ty::Adt { args, .. } => args.iter().all(|a| a.is_first_class()),
+            Ty::Arrow(params, ret, _) => {
+                params.iter().all(|p| p.is_first_class()) && ret.is_first_class()
+            }
+            _ => true,
+        }
+    }
+
     /// Returns the kind of this type.
     ///
     /// Capability types are `Affine` (single-use). All other types are

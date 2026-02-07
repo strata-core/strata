@@ -79,11 +79,27 @@ fn cli_run_with_trace() {
     // Verify trace file was created with valid JSONL
     let trace_content = std::fs::read_to_string(&trace).expect("read trace file");
     let lines: Vec<&str> = trace_content.lines().filter(|l| !l.is_empty()).collect();
-    assert!(!lines.is_empty(), "trace should have at least one entry");
+    // Expect at least 3 lines: header, effect, footer
+    assert!(
+        lines.len() >= 3,
+        "trace should have header + effect + footer, got {} lines",
+        lines.len()
+    );
 
-    let entry: serde_json::Value = serde_json::from_str(lines[0]).expect("parse JSONL line");
+    // First line is header
+    let header: serde_json::Value = serde_json::from_str(lines[0]).expect("parse header");
+    assert_eq!(header["record"], "header");
+
+    // Second line is the effect entry
+    let entry: serde_json::Value = serde_json::from_str(lines[1]).expect("parse effect");
+    assert_eq!(entry["record"], "effect");
     assert_eq!(entry["operation"], "read_file");
     assert_eq!(entry["output"]["status"], "ok");
+
+    // Last line is footer
+    let footer: serde_json::Value =
+        serde_json::from_str(lines[lines.len() - 1]).expect("parse footer");
+    assert_eq!(footer["record"], "footer");
 }
 
 #[test]
@@ -124,11 +140,7 @@ fn cli_replay_success() {
 
     // Replay
     let replay_output = strata_bin()
-        .args([
-            "replay",
-            trace.to_str().unwrap(),
-            source.to_str().unwrap(),
-        ])
+        .args(["replay", trace.to_str().unwrap(), source.to_str().unwrap()])
         .output()
         .expect("replay binary");
 

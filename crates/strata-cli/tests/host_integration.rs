@@ -4,7 +4,9 @@
 //! that dispatch to real Rust host implementations, with capability
 //! injection at the main() entry point and structured trace emission.
 
-use strata_cli::eval::{run_module, run_module_replay, run_module_traced, Value};
+use strata_cli::eval::{
+    run_module, run_module_replay, run_module_traced, run_module_traced_full, Value,
+};
 
 use std::sync::{Arc, Mutex};
 
@@ -173,7 +175,11 @@ fn host_read_nonexistent_file_error() {
     "#;
 
     let err = run_err(src);
-    assert!(err.contains("read_file"), "error should mention read_file: {}", err);
+    assert!(
+        err.contains("read_file"),
+        "error should mention read_file: {}",
+        err
+    );
 }
 
 #[test]
@@ -244,7 +250,9 @@ fn run_traced(src: &str) -> (Value, Vec<serde_json::Value>) {
     let entries: Vec<serde_json::Value> = output
         .lines()
         .filter(|l| !l.is_empty())
-        .map(|l| serde_json::from_str(l).expect("invalid JSONL line"))
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("invalid JSONL line"))
+        // Filter to only effect records (skip header/footer)
+        .filter(|v| v.get("record").and_then(|r| r.as_str()) == Some("effect"))
         .collect();
     (result, entries)
 }
@@ -260,7 +268,8 @@ fn run_traced_err(src: &str) -> Vec<serde_json::Value> {
     output
         .lines()
         .filter(|l| !l.is_empty())
-        .map(|l| serde_json::from_str(l).expect("invalid JSONL line"))
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("invalid JSONL line"))
+        .filter(|v| v.get("record").and_then(|r| r.as_str()) == Some("effect"))
         .collect()
 }
 
@@ -284,7 +293,12 @@ fn trace_records_read_file() {
 
     let (result, entries) = run_traced(&src);
     assert!(matches!(result, Value::Str(_)));
-    assert_eq!(entries.len(), 1, "expected 1 trace entry, got {}", entries.len());
+    assert_eq!(
+        entries.len(),
+        1,
+        "expected 1 trace entry, got {}",
+        entries.len()
+    );
 
     let entry = &entries[0];
     assert_eq!(entry["seq"], 0);
@@ -292,10 +306,17 @@ fn trace_records_read_file() {
     assert_eq!(entry["operation"], "read_file");
     assert_eq!(entry["capability"]["kind"], "FsCap");
     assert_eq!(entry["capability"]["access"], "borrow");
-    assert_eq!(entry["inputs"]["path"], path_str);
+    // Inputs are now tagged TraceValue objects: {"t":"Str","v":"..."}
+    assert_eq!(entry["inputs"]["path"]["t"], "Str");
+    assert_eq!(entry["inputs"]["path"]["v"], path_str);
     assert_eq!(entry["output"]["status"], "ok");
-    assert_eq!(entry["output"]["value"], "traced content");
-    assert!(entry["output"]["value_hash"].as_str().unwrap().starts_with("sha256:"));
+    // Output value is now a tagged TraceValue
+    assert_eq!(entry["output"]["value"]["t"], "Str");
+    assert_eq!(entry["output"]["value"]["v"], "traced content");
+    assert!(entry["output"]["value_hash"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
     assert!(entry["output"]["value_size"].as_u64().unwrap() > 0);
     assert!(entry["duration_ms"].is_u64());
     assert!(entry["timestamp"].as_str().unwrap().contains('T'));
@@ -326,10 +347,12 @@ fn trace_records_write_file() {
     assert_eq!(entry["operation"], "write_file");
     assert_eq!(entry["capability"]["kind"], "FsCap");
     assert_eq!(entry["capability"]["access"], "borrow");
-    assert_eq!(entry["inputs"]["path"], path_str);
-    assert_eq!(entry["inputs"]["content"], "hello trace");
+    assert_eq!(entry["inputs"]["path"]["t"], "Str");
+    assert_eq!(entry["inputs"]["path"]["v"], path_str);
+    assert_eq!(entry["inputs"]["content"]["t"], "Str");
+    assert_eq!(entry["inputs"]["content"]["v"], "hello trace");
     assert_eq!(entry["output"]["status"], "ok");
-    assert_eq!(entry["output"]["value"], "()");
+    assert_eq!(entry["output"]["value"]["t"], "Unit");
 }
 
 #[test]
@@ -362,8 +385,14 @@ fn trace_hashes_large_output() {
     let entry = &entries[0];
     assert_eq!(entry["output"]["status"], "ok");
     // value should be absent (null in JSON) because output > 1024 bytes
-    assert!(entry["output"]["value"].is_null(), "large output should omit value");
-    assert!(entry["output"]["value_hash"].as_str().unwrap().starts_with("sha256:"));
+    assert!(
+        entry["output"]["value"].is_null(),
+        "large output should omit value"
+    );
+    assert!(entry["output"]["value_hash"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
     assert_eq!(entry["output"]["value_size"], 2000);
 }
 
@@ -390,7 +419,8 @@ fn trace_includes_small_output() {
 
     let entry = &entries[0];
     assert_eq!(entry["output"]["status"], "ok");
-    assert_eq!(entry["output"]["value"], "small");
+    assert_eq!(entry["output"]["value"]["t"], "Str");
+    assert_eq!(entry["output"]["value"]["v"], "small");
     assert_eq!(entry["output"]["value_size"], 5);
 }
 
@@ -409,9 +439,17 @@ fn trace_records_error() {
 
     let entry = &entries[0];
     assert_eq!(entry["output"]["status"], "error");
-    let err_value = entry["output"]["value"].as_str().unwrap();
-    assert!(err_value.contains("read_file"), "error should mention read_file: {}", err_value);
-    assert!(entry["output"]["value_hash"].as_str().unwrap().starts_with("sha256:"));
+    assert_eq!(entry["output"]["value"]["t"], "Str");
+    let err_value = entry["output"]["value"]["v"].as_str().unwrap();
+    assert!(
+        err_value.contains("read_file"),
+        "error should mention read_file: {}",
+        err_value
+    );
+    assert!(entry["output"]["value_hash"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
 }
 
 #[test]
@@ -472,7 +510,8 @@ fn trace_disabled_no_output() {
 // Phase 4: Deterministic replay tests
 // =========================================================================
 
-/// Helper: run a program traced, then replay the trace with the same program.
+/// Helper: run a program with full tracing, then replay the trace.
+/// Uses run_module_traced_full so the trace is replay-capable.
 fn trace_and_replay(src: &str) -> (Value, Value) {
     let module = strata_parse::parse_str("<test>", src).expect("parse failed");
     let mut tc = strata_types::TypeChecker::new();
@@ -480,7 +519,7 @@ fn trace_and_replay(src: &str) -> (Value, Value) {
 
     let buf = SharedBuf::new();
     let writer = buf.clone();
-    let live_result = run_module_traced(&module, Box::new(writer)).expect("live run failed");
+    let live_result = run_module_traced_full(&module, Box::new(writer)).expect("live run failed");
 
     let trace = buf.contents();
     let replay_result = run_module_replay(&module, &trace).expect("replay failed");
@@ -509,7 +548,10 @@ fn replay_produces_same_result() {
     let (live, replay) = trace_and_replay(&src);
     match (&live, &replay) {
         (Value::Str(a), Value::Str(b)) => assert_eq!(a, b),
-        _ => panic!("expected matching Str values, got live={}, replay={}", live, replay),
+        _ => panic!(
+            "expected matching Str values, got live={}, replay={}",
+            live, replay
+        ),
     }
 }
 
@@ -537,7 +579,7 @@ fn replay_detects_input_mismatch() {
     tc.check_module(&module_live).expect("typecheck");
     let buf = SharedBuf::new();
     let writer = buf.clone();
-    let _ = run_module_traced(&module_live, Box::new(writer)).expect("live run");
+    let _ = run_module_traced_full(&module_live, Box::new(writer)).expect("live run");
     let trace = buf.contents();
 
     // Replay with a different path
@@ -552,7 +594,9 @@ fn replay_detects_input_mismatch() {
     let module_replay = strata_parse::parse_str("<test>", src_replay).expect("parse");
     let mut tc2 = strata_types::TypeChecker::new();
     tc2.check_module(&module_replay).expect("typecheck");
-    let err = run_module_replay(&module_replay, &trace).unwrap_err().to_string();
+    let err = run_module_replay(&module_replay, &trace)
+        .unwrap_err()
+        .to_string();
     assert!(
         err.contains("input mismatch"),
         "expected input mismatch error, got: {}",
@@ -584,7 +628,7 @@ fn replay_detects_operation_mismatch() {
     tc.check_module(&module_live).expect("typecheck");
     let buf = SharedBuf::new();
     let writer = buf.clone();
-    let _ = run_module_traced(&module_live, Box::new(writer)).expect("live run");
+    let _ = run_module_traced_full(&module_live, Box::new(writer)).expect("live run");
     let trace = buf.contents();
 
     // Replay with write_file instead
@@ -602,7 +646,9 @@ fn replay_detects_operation_mismatch() {
     let module_replay = strata_parse::parse_str("<test>", &src_replay).expect("parse");
     let mut tc2 = strata_types::TypeChecker::new();
     tc2.check_module(&module_replay).expect("typecheck");
-    let err = run_module_replay(&module_replay, &trace).unwrap_err().to_string();
+    let err = run_module_replay(&module_replay, &trace)
+        .unwrap_err()
+        .to_string();
     assert!(
         err.contains("operation mismatch"),
         "expected operation mismatch error, got: {}",
@@ -640,7 +686,7 @@ fn replay_detects_extra_effects() {
     tc.check_module(&module_live).expect("typecheck");
     let buf = SharedBuf::new();
     let writer = buf.clone();
-    let _ = run_module_traced(&module_live, Box::new(writer)).expect("live run");
+    let _ = run_module_traced_full(&module_live, Box::new(writer)).expect("live run");
     let trace = buf.contents();
 
     // Replay with only 1 read
@@ -658,7 +704,9 @@ fn replay_detects_extra_effects() {
     let module_replay = strata_parse::parse_str("<test>", &src_replay).expect("parse");
     let mut tc2 = strata_types::TypeChecker::new();
     tc2.check_module(&module_replay).expect("typecheck");
-    let err = run_module_replay(&module_replay, &trace).unwrap_err().to_string();
+    let err = run_module_replay(&module_replay, &trace)
+        .unwrap_err()
+        .to_string();
     assert!(
         err.contains("unreplayed"),
         "expected unreplayed effects error, got: {}",
@@ -691,7 +739,7 @@ fn replay_detects_missing_effects() {
     tc.check_module(&module_live).expect("typecheck");
     let buf = SharedBuf::new();
     let writer = buf.clone();
-    let _ = run_module_traced(&module_live, Box::new(writer)).expect("live run");
+    let _ = run_module_traced_full(&module_live, Box::new(writer)).expect("live run");
     let trace = buf.contents();
 
     // Replay with 2 reads
@@ -710,7 +758,9 @@ fn replay_detects_missing_effects() {
     let module_replay = strata_parse::parse_str("<test>", &src_replay).expect("parse");
     let mut tc2 = strata_types::TypeChecker::new();
     tc2.check_module(&module_replay).expect("typecheck");
-    let err = run_module_replay(&module_replay, &trace).unwrap_err().to_string();
+    let err = run_module_replay(&module_replay, &trace)
+        .unwrap_err()
+        .to_string();
     assert!(
         err.contains("unexpected extern call") || err.contains("not in trace"),
         "expected unexpected effect error, got: {}",
@@ -736,15 +786,13 @@ fn replay_handles_errors() {
     // Live run — capture trace (program errors)
     let buf = SharedBuf::new();
     let writer = buf.clone();
-    let live_err = run_module_traced(&module, Box::new(writer))
+    let live_err = run_module_traced_full(&module, Box::new(writer))
         .unwrap_err()
         .to_string();
     let trace = buf.contents();
 
     // Replay — should produce same error
-    let replay_err = run_module_replay(&module, &trace)
-        .unwrap_err()
-        .to_string();
+    let replay_err = run_module_replay(&module, &trace).unwrap_err().to_string();
 
     assert!(
         replay_err.contains("read_file"),
@@ -758,4 +806,204 @@ fn replay_handles_errors() {
         live_err,
         replay_err
     );
+}
+
+#[test]
+fn trace_write_failure_aborts_execution() {
+    // A writer that fails on the second write (header succeeds, first effect fails).
+    struct FailWriter {
+        writes: std::sync::atomic::AtomicU32,
+    }
+    impl std::io::Write for FailWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let n = self
+                .writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n >= 1 {
+                // Fail on second write (first effect entry)
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "disk full",
+                ))
+            } else {
+                Ok(buf.len())
+            }
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let file_path = dir.path().join("fail_trace.txt");
+    std::fs::write(&file_path, "fail data").expect("write test file");
+    let path_str = file_path.to_str().unwrap();
+
+    let src = format!(
+        r#"
+        extern fn read_file(fs: &FsCap, path: String) -> String & {{Fs}};
+
+        fn main(fs: FsCap) -> String & {{Fs}} {{
+            read_file(&fs, "{}")
+        }}
+        "#,
+        path_str
+    );
+
+    let module = strata_parse::parse_str("<test>", &src).expect("parse");
+    let mut tc = strata_types::TypeChecker::new();
+    tc.check_module(&module).expect("typecheck");
+
+    let writer = FailWriter {
+        writes: std::sync::atomic::AtomicU32::new(0),
+    };
+    let err = run_module_traced_full(&module, Box::new(writer))
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        err.contains("trace write error") || err.contains("disk full"),
+        "expected trace write error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn replay_rejects_audit_trace() {
+    // Traces recorded with --trace (audit mode) cannot be replayed
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let file_path = dir.path().join("audit_trace.txt");
+    std::fs::write(&file_path, "audit data").expect("write test file");
+    let path_str = file_path.to_str().unwrap();
+
+    let src = format!(
+        r#"
+        extern fn read_file(fs: &FsCap, path: String) -> String & {{Fs}};
+
+        fn main(fs: FsCap) -> String & {{Fs}} {{
+            read_file(&fs, "{}")
+        }}
+        "#,
+        path_str
+    );
+
+    let module = strata_parse::parse_str("<test>", &src).expect("parse");
+    let mut tc = strata_types::TypeChecker::new();
+    tc.check_module(&module).expect("typecheck");
+
+    // Record audit trace (not replay-capable)
+    let buf = SharedBuf::new();
+    let writer = buf.clone();
+    let _ = run_module_traced(&module, Box::new(writer)).expect("live run");
+    let trace = buf.contents();
+
+    // Replay should fail with NotReplayable
+    let err = run_module_replay(&module, &trace).unwrap_err().to_string();
+    assert!(
+        err.contains("not replayable") || err.contains("--trace-full"),
+        "expected not-replayable error, got: {}",
+        err
+    );
+}
+
+// =========================================================================
+// Fix 5 security tests: TraceValue rejects non-data types
+// =========================================================================
+
+#[test]
+fn replay_rejects_cap_in_trace_output() {
+    // TraceValue only has Int/Float/Str/Bool/Unit — a crafted "Cap" tag must fail.
+    use strata_cli::host::TraceValue;
+    let json = r#"{"t":"Cap","v":"FsCap"}"#;
+    let result = serde_json::from_str::<TraceValue>(json);
+    assert!(
+        result.is_err(),
+        "TraceValue should reject Cap tag: {:?}",
+        result
+    );
+}
+
+#[test]
+fn replay_rejects_closure_in_trace_output() {
+    use strata_cli::host::TraceValue;
+    let json = r#"{"t":"Closure","v":{"params":["x"],"body":"x+1"}}"#;
+    let result = serde_json::from_str::<TraceValue>(json);
+    assert!(
+        result.is_err(),
+        "TraceValue should reject Closure tag: {:?}",
+        result
+    );
+}
+
+#[test]
+fn replay_rejects_tuple_in_trace_output() {
+    use strata_cli::host::TraceValue;
+    let json = r#"{"t":"Tuple","v":[1,2,3]}"#;
+    let result = serde_json::from_str::<TraceValue>(json);
+    assert!(
+        result.is_err(),
+        "TraceValue should reject Tuple tag: {:?}",
+        result
+    );
+}
+
+// =========================================================================
+// Fix 6 security tests: schema version and footer completeness
+// =========================================================================
+
+#[test]
+fn replay_rejects_unknown_version() {
+    use strata_cli::host::TraceReplayer;
+    // Craft a trace with schema_version "99.0" — must be rejected.
+    let trace = r#"{"record":"header","schema_version":"99.0","timestamp":"2026-01-01T00:00:00.000Z","full_values":true}
+{"record":"effect","seq":0,"timestamp":"2026-01-01T00:00:00.001Z","effect":"Fs","operation":"read_file","capability":{"kind":"FsCap","access":"borrow"},"inputs":{"path":{"t":"Str","v":"/tmp/x"}},"output":{"status":"ok","value":{"t":"Str","v":"data"},"value_hash":"sha256:abc","value_size":4},"duration_ms":1,"full_values":true}
+{"record":"footer","timestamp":"2026-01-01T00:00:00.002Z","effect_count":1,"trace_status":"complete","program_status":"success"}"#;
+
+    let err = TraceReplayer::from_jsonl(trace).unwrap_err().to_string();
+    assert!(
+        err.contains("unsupported trace schema version") || err.contains("99.0"),
+        "expected version rejection, got: {}",
+        err
+    );
+}
+
+#[test]
+fn replay_detects_missing_footer() {
+    use strata_cli::host::TraceReplayer;
+    // Truncated trace: header + effect but no footer.
+    let trace = r#"{"record":"header","schema_version":"0.1","timestamp":"2026-01-01T00:00:00.000Z","full_values":true}
+{"record":"effect","seq":0,"timestamp":"2026-01-01T00:00:00.001Z","effect":"Fs","operation":"read_file","capability":{"kind":"FsCap","access":"borrow"},"inputs":{"path":{"t":"Str","v":"/tmp/x"}},"output":{"status":"ok","value":{"t":"Str","v":"data"},"value_hash":"sha256:abc","value_size":4},"duration_ms":1,"full_values":true}"#;
+
+    let replayer = TraceReplayer::from_jsonl(trace).expect("should parse truncated trace");
+    assert!(
+        !replayer.is_trace_complete(),
+        "truncated trace should not be marked complete"
+    );
+}
+
+// =========================================================================
+// Fix 2 security test: tagged value type confusion
+// =========================================================================
+
+#[test]
+fn trace_tagged_str_not_confused_with_int() {
+    use strata_cli::host::TraceValue;
+
+    let str_val = TraceValue::Str("42".to_string());
+    let int_val = TraceValue::Int(42);
+
+    // They must serialize to different JSON
+    let str_json = serde_json::to_string(&str_val).unwrap();
+    let int_json = serde_json::to_string(&int_val).unwrap();
+    assert_ne!(
+        str_json, int_json,
+        "Str(\"42\") and Int(42) must serialize differently"
+    );
+
+    // Round-trip preserves the distinction
+    let str_back: TraceValue = serde_json::from_str(&str_json).unwrap();
+    let int_back: TraceValue = serde_json::from_str(&int_json).unwrap();
+    assert_eq!(str_back, TraceValue::Str("42".to_string()));
+    assert_eq!(int_back, TraceValue::Int(42));
+    assert_ne!(str_back, int_back);
 }

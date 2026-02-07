@@ -80,6 +80,8 @@ pub enum InferError {
     EffectVarLimitExceeded { limit: u32 },
     /// Cyclic effect variable substitution
     EffectCycle { var: crate::effects::EffectVarId },
+    /// Reference type (&T) escaped its allowed position (extern fn params only)
+    RefEscape { ty: Ty, context: String, span: Span },
     /// Effect substitution chain too deep
     EffectChainTooDeep { depth: usize },
     /// Scheme instantiation arity mismatch (internal invariant violation)
@@ -495,6 +497,16 @@ impl InferCtx {
             } => {
                 // Infer the type of the value
                 let value_ty = self.infer_expr_ctx(ctx, value)?;
+
+                // Reject &T in let bindings — refs are second-class and can only
+                // appear at extern fn call sites, not stored in variables.
+                if !value_ty.is_first_class() {
+                    return Err(InferError::RefEscape {
+                        ty: value_ty,
+                        context: "let binding".to_string(),
+                        span: *span,
+                    });
+                }
 
                 // If there's a type annotation, add constraint
                 // (only allowed for simple identifier patterns)
