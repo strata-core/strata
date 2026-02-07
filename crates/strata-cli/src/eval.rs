@@ -6,13 +6,13 @@
 use anyhow::{bail, Result};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use strata_ast::ast::{
     BinOp, Block, Expr, FieldInit, Lit, MatchArm, Module, Pat, Path, Stmt, UnOp,
 };
 use strata_types::CapKind;
 
-use crate::host::{HostRegistry, TraceEmitter};
+use crate::host::{ExternFnMeta, HostRegistry, ParamKind, TraceEmitter};
 
 /// Maximum call depth to prevent stack overflow from deep recursion
 const MAX_CALL_DEPTH: u32 = 1000;
@@ -159,6 +159,7 @@ struct Binding {
 pub struct Env {
     scopes: Vec<HashMap<String, Binding>>,
     host_registry: Option<Arc<HostRegistry>>,
+    tracer: Option<Arc<Mutex<TraceEmitter>>>,
 }
 
 impl Default for Env {
@@ -166,6 +167,7 @@ impl Default for Env {
         Self {
             scopes: vec![HashMap::new()],
             host_registry: None,
+            tracer: None,
         }
     }
 }
@@ -181,7 +183,14 @@ impl Env {
         Self {
             scopes: vec![HashMap::new()],
             host_registry: Some(registry),
+            tracer: None,
         }
+    }
+
+    /// Attach a trace emitter to this environment.
+    pub fn with_tracer(mut self, tracer: Arc<Mutex<TraceEmitter>>) -> Self {
+        self.tracer = Some(tracer);
+        self
     }
 
     /// Push a new scope onto the stack
@@ -343,13 +352,61 @@ fn extract_cap_type_name(ty: &strata_ast::ast::TypeExpr) -> Option<String> {
 /// Run a module with host function dispatch and main() capability injection.
 ///
 /// This is the primary entry point for programs that use capabilities.
-/// It creates a host registry, registers extern fns, inspects main()'s
-/// parameter types, and injects the requested capabilities as `Value::Cap`.
+/// No trace output is produced.
 pub fn run_module(m: &Module) -> Result<Value> {
+    run_module_inner(m, None)
+}
+
+/// Run a module with host function dispatch, capability injection, and
+/// JSONL trace output written to the provided writer.
+pub fn run_module_traced(m: &Module, writer: Box<dyn std::io::Write + Send>) -> Result<Value> {
+    run_module_inner(m, Some(writer))
+}
+
+fn run_module_inner(
+    m: &Module,
+    trace_writer: Option<Box<dyn std::io::Write + Send>>,
+) -> Result<Value> {
     use strata_ast::ast::Item;
 
-    let registry = Arc::new(HostRegistry::new());
+    let mut registry = HostRegistry::new();
+
+    // Build ExternFnMeta from extern fn declarations and register host fn refs
+    for item in &m.items {
+        if let Item::ExternFn(decl) = item {
+            let mut params = Vec::new();
+            for param in &decl.params {
+                if let Some(ty_expr) = &param.ty {
+                    let (is_ref, cap_name) = extract_cap_info(ty_expr);
+                    if let Some(name) = cap_name {
+                        if let Some(kind) = CapKind::from_name(&name) {
+                            params.push(ParamKind::Cap {
+                                kind,
+                                borrowed: is_ref,
+                            });
+                            continue;
+                        }
+                    }
+                }
+                params.push(ParamKind::Data {
+                    name: param.name.text.clone(),
+                });
+            }
+            registry.register_extern_meta(
+                &decl.name.text,
+                ExternFnMeta { params },
+            );
+        }
+    }
+
+    let registry = Arc::new(registry);
+
+    let tracer = trace_writer.map(|w| Arc::new(Mutex::new(TraceEmitter::new(w))));
+
     let mut env = Env::with_host_registry(registry);
+    if let Some(t) = tracer {
+        env = env.with_tracer(t);
+    }
 
     // Register extern fns as host function references
     for item in &m.items {
@@ -362,7 +419,7 @@ pub fn run_module(m: &Module) -> Result<Value> {
         }
     }
 
-    // Collect and register Strata function declarations (same as eval_module)
+    // Collect and register Strata function declarations
     let fn_decls: Vec<_> = m
         .items
         .iter()
@@ -464,6 +521,21 @@ pub fn run_module(m: &Module) -> Result<Value> {
         Ok(result.into_value())
     } else {
         bail!("main is not a function")
+    }
+}
+
+/// Extract cap info from a TypeExpr: returns (is_ref, cap_type_name).
+fn extract_cap_info(ty: &strata_ast::ast::TypeExpr) -> (bool, Option<String>) {
+    use strata_ast::ast::TypeExpr;
+    match ty {
+        TypeExpr::Ref(inner, _) => {
+            let (_, name) = extract_cap_info(inner);
+            (true, name)
+        }
+        TypeExpr::Path(segments, _) if segments.len() == 1 => {
+            (false, Some(segments[0].text.clone()))
+        }
+        _ => (false, None),
     }
 }
 
@@ -896,18 +968,22 @@ fn eval_call_inner(env: &mut Env, callee: &Expr, args: &[Expr]) -> Result<Contro
             arg_values.push(cf.into_value());
         }
 
-        // Filter out capability args — host fns only receive data args
-        let data_args: Vec<_> = arg_values
-            .into_iter()
-            .filter(|v| !matches!(v, Value::Cap(_)))
-            .collect();
-
         let registry = env
             .host_registry
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no host registry available for extern fn '{}'", name))?;
-        let mut tracer = TraceEmitter::new();
-        match registry.call(name, &data_args, &mut tracer) {
+
+        // Single dispatch path: always use position-aware dispatch_traced().
+        // TraceEmitter::disabled() handles the no-output case.
+        let result = if let Some(tracer) = &env.tracer {
+            let mut t = tracer.lock().unwrap();
+            registry.dispatch_traced(name, &arg_values, &mut t)
+        } else {
+            let mut t = TraceEmitter::disabled();
+            registry.dispatch_traced(name, &arg_values, &mut t)
+        };
+
+        match result {
             Ok(val) => return Ok(ControlFlow::Value(val)),
             Err(e) => bail!("host function '{}': {}", name, e),
         }
