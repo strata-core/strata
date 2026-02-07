@@ -1,7 +1,7 @@
 # Strata - Implemented Features
 
-> Last updated: February 7, 2026
-> Status: Issues 001-009 complete
+> Last updated: February 2026
+> Status: Issues 001-010 complete
 
 ## ✅ Working Features
 
@@ -336,7 +336,6 @@ fn swap(pair: (Int, Int)) -> (Int, Int) {
 - **Exhaustiveness deferred on unresolved types:** When the scrutinee has unresolved type variables (e.g., matching on a freshly constructed value without type annotation), exhaustiveness checking is skipped. Workaround: annotate the type or bind to a variable first.
 - **Nested enum patterns:** Complex nested patterns may not report exhaustiveness correctly in all cases.
 - **Generic type annotations in let bindings:** `let x: Result<Int, String> = ...` not yet supported. Workaround: rely on type inference.
-- **Capability binding semantics:** `let x = cap;` (bare rebinding) is rejected alongside container storage. Capabilities must be passed as function parameters, not stored in variables. This is intentional — Issue 010 (affine types) will formalize move semantics.
 - **Block-level capability check is best-effort:** When types contain unresolved inference variables inside a function body, the capability check may not trigger. Post-solving validation (Issues 008-009) catches most cases.
 
 **Example Files:**
@@ -522,8 +521,6 @@ fn passthrough(fs: FsCap, x: Int) -> Int { x + 1 }
 - No warnings for unused capabilities (intentional — pass-through pattern)
 - Capability provisioning (how `main` gets capabilities from runtime) deferred to Issue 011
 - No `using` keyword syntax yet (planned for v0.2 ergonomics)
-- Capabilities are not yet affine/linear (Issue 010 will add move semantics)
-
 **What's Next:** Issue 010 (Affine Types) — prevent capability duplication and leaking
 
 **Example Files:**
@@ -539,7 +536,97 @@ fn passthrough(fs: FsCap, x: Int) -> Int { x + 1 }
 
 ---
 
-### CLI (Issue 001, updated through 008)
+### Issue 010: Affine Types / Linear Capabilities (Complete)
+
+**Completed:** February 2026
+**Test Coverage:** 435 tests (33 new move checker tests)
+
+**What was implemented:**
+
+**Kind System:**
+- `Kind` enum: `Unrestricted` (free use) and `Affine` (at-most-once)
+- `Ty::kind()` method: `Ty::Cap(_)` returns `Affine`, all others `Unrestricted`
+- Kind is intrinsic to the type — no user annotation needed
+
+**Move Checker (post-inference pass):**
+- Separate validation pass after type inference — does NOT modify unification or solver
+- Tracks binding consumption: each affine binding can be used at most once
+- Generation-based binding IDs for correct shadowing handling
+- Let-binding transfers ownership: `let a = fs;` consumes `fs`, makes `a` alive
+- Function call arguments evaluated left-to-right with cumulative move state
+- Pessimistic branch join: if consumed in ANY branch, consumed after if/else/match
+- Loop rejection: capability use inside while loops is an error
+- Polymorphic return type resolution via manual scheme instantiation
+
+**CapabilityInBinding Replaced:**
+- `let cap = fs;` is now a valid ownership transfer (was an error in Issue 009)
+- The move checker enforces single-use semantics instead
+- ADT field capability ban remains (capabilities cannot be stored in struct/enum fields)
+
+**Error Messages (permission/authority vocabulary):**
+- `capability 'fs' has already been used; permission was transferred at ...; 'fs' is no longer available`
+- `cannot use single-use capability 'fs' inside loop; 'fs' would be used on every iteration`
+- No Rust-style "moved value" language — designed for SRE/DevOps audience
+
+**What Works:**
+```strata
+// Single use — valid
+fn save(fs: FsCap, data: String) -> () & {Fs} {
+    write_file(fs, data)
+}
+
+// Let transfer — valid
+fn transfer(fs: FsCap) -> () & {Fs} {
+    let cap = fs;
+    use_cap(cap)
+}
+
+// Branch consistency — valid (each branch uses fs once)
+fn conditional(fs: FsCap, c: Bool) -> () & {Fs} {
+    if c { use_cap(fs) } else { use_cap(fs) }
+}
+
+// Unused drop — valid (affine = at-most-once, not exactly-once)
+fn passthrough(fs: FsCap) -> () & {} { () }
+
+// ERRORS:
+fn double(fs: FsCap) -> () & {Fs} {
+    use_cap(fs);
+    use_cap(fs)  // ERROR: capability 'fs' has already been used
+}
+
+fn looped(fs: FsCap) -> () & {Fs} {
+    while true { use_cap(fs) }  // ERROR: cannot use inside loop
+}
+```
+
+**Security Milestone: Capability Model Complete**
+
+| Property | Enforced by | Issue |
+|----------|-------------|-------|
+| No forging | Built-in types, reserved names | 009 |
+| No ambient authority | Effects require matching capabilities | 009 |
+| No duplication | Affine single-use enforcement | 010 |
+| No leaking | Cannot store in ADTs or closures | 009 + 010 |
+| Explicit flow | Capabilities threaded through calls | 009 + 010 |
+| Auditability | Capability usage visible in signatures | 009 |
+
+**Known Limitations (v0.1):**
+- Affine ADTs not supported (ADT containing cap field would need kind inference)
+- No closure/lambda in the AST, so closure capture checking is deferred
+- No borrowing/referencing of capabilities (`&FsCap` for read-only access)
+- Module-level let bindings with capability types are not move-checked
+
+**Location:**
+- `crates/strata-types/src/infer/ty.rs` — `Kind` enum and `Ty::kind()` method
+- `crates/strata-types/src/move_check.rs` — Move checker module
+- `crates/strata-types/src/checker.rs` — Integration into `check_fn()`
+
+**Status:** Complete. Affine capability enforcement working.
+
+---
+
+### CLI (Issue 001, updated through 010)
 
 **Commands:**
 ```bash
@@ -586,8 +673,7 @@ strata-cli --eval file.strata
 - Pipe operator: `x |> f |> g`
 
 **From Later Issues:**
-- Affine types / linear capabilities (Issue 010) ← **NEXT**
-- WASM Runtime + Effect Traces (Issue 011)
+- WASM Runtime + Effect Traces (Issue 011) ← **NEXT**
 - Profile enforcement
 - Actors & supervision
 - Datalog/logic engine
@@ -604,7 +690,7 @@ strata-cli --eval file.strata
 # Build all crates
 cargo build --workspace
 
-# Run all tests (402 tests)
+# Run all tests (435 tests)
 cargo test --workspace
 
 # Run with clippy (enforced in CI)
@@ -637,16 +723,16 @@ strata-ast       (no deps)
 ## Project Stats
 
 - **Crates:** 4 (ast, parse, types, cli)
-- **Total Tests:** 402 (parser: 48, types: 174, cli: 26, effects: 41, capabilities: 46, others: 67)
-- **Lines of Code:** ~9000+ (estimate)
-- **Issues Completed:** 9 + hardening (Parser, Effects, Type Scaffolding, Basic Type Checking, Functions, Blocks, ADTs, Security Hardening, Effect System, Capability Types)
+- **Total Tests:** 435 (parser: 48, types: 174, cli: 26, effects: 41, capabilities: 46, move_check: 33, others: 67)
+- **Lines of Code:** ~10,000+ (estimate)
+- **Issues Completed:** 10 + hardening (Parser, Effects, Type Scaffolding, Basic Type Checking, Functions, Blocks, ADTs, Security Hardening, Effect System, Capability Types, Affine Types)
 - **Example Files:** 30+
 
 ---
 
 ## Next Up
 
-**Issue 010: Affine Types / Linear Capabilities**
-- Prevent capability duplication
-- Move semantics for capabilities
-- Linear type tracking
+**Issue 011: WASM Runtime + Effect Traces**
+- Compile Strata to WASM
+- Runtime effect trace recording
+- Capability provisioning from runtime

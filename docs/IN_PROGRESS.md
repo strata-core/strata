@@ -1,13 +1,57 @@
 # Strata: In Progress
 
-**Last Updated:** February 7, 2026
-**Current Version:** Post-Issue 009 (pre-tag)
-**Current Focus:** Issue 010 (Affine Types / Linear Capabilities - "The Final Boss")
-**Progress:** Issues 001-009 complete
+**Last Updated:** February 2026
+**Current Version:** Post-Issue 010
+**Current Focus:** Issue 011 (WASM Runtime + Effect Traces)
+**Progress:** Issues 001-010 complete
 
 ---
 
 ## Current Status
+
+### Issue 010: Affine Types / Linear Capabilities COMPLETE (Feb 2026)
+
+**What was built:**
+
+**Kind System:**
+- `Kind` enum: `Unrestricted` (free use) and `Affine` (at-most-once)
+- `Ty::kind()` method: `Ty::Cap(_)` → `Affine`, all others → `Unrestricted`
+- Kind is intrinsic to the type — no user annotation needed
+
+**Move Checker (post-inference pass):**
+- Separate validation pass after type inference — does NOT modify unification or solver
+- Tracks binding consumption: each affine binding used at most once
+- Generation-based binding IDs for correct shadowing
+- Let-binding transfers ownership: `let a = fs;` consumes `fs`, makes `a` alive
+- Function call arguments evaluated left-to-right with cumulative state
+- Pessimistic branch join: if consumed in ANY branch, consumed after if/else/match
+- Loop rejection: capability use inside while loops is an error
+- Polymorphic return type resolution via manual scheme instantiation
+
+**CapabilityInBinding Replaced:**
+- `let cap = fs;` is now a valid ownership transfer (was error in Issue 009)
+- Move checker enforces single-use instead of blanket rejection
+- ADT field capability ban remains (caps cannot be struct/enum fields)
+
+**Error Messages (permission/authority vocabulary):**
+- `capability 'fs' has already been used; permission was transferred at ...; 'fs' is no longer available`
+- `cannot use single-use capability 'fs' inside loop; 'fs' would be used on every iteration`
+- Designed for SRE/DevOps audience, not PL researchers
+
+**Security Milestone: Capability Model Complete**
+
+| Property | Enforced by | Issue |
+|----------|-------------|-------|
+| No forging | Built-in types, reserved names | 009 |
+| No ambient authority | Effects require matching capabilities | 009 |
+| No duplication | Affine single-use enforcement | 010 |
+| No leaking | Cannot store in ADTs or closures | 009 + 010 |
+| Explicit flow | Capabilities threaded through calls | 009 + 010 |
+| Auditability | Capability usage visible in signatures | 009 |
+
+**Test stats:** 431 tests passing (29 new move checker tests)
+
+---
 
 ### Issue 009: Capability Types COMPLETE (Feb 6-7, 2026, 1 week)
 
@@ -25,81 +69,23 @@
 - Open tail effect variables (from HOF callbacks) are not checked (correct — parametric effects)
 - Unused capabilities are allowed (pass-through pattern)
 
-**Name Shadowing Protection:**
-- ADT definitions cannot shadow capability type names (FsCap, NetCap, etc.)
-- `ReservedCapabilityName` error for structs/enums using capability names
-
-**Ergonomic Error Messages:**
-- Clear "missing capability" errors with help text suggesting the missing parameter
-- Hints for FsCap/Fs confusion (effect name used as type or vice versa)
-- Extern error includes suggestion to remove effect annotation if actually pure
-
 **Critical Fix: Zero-Cap Skip Eliminated:**
 - Removed `if !param_caps.is_empty()` guard that allowed zero-cap functions to bypass enforcement
-- Removed `has_any_cap` guard that allowed zero-cap externs to bypass enforcement
-- Three independent external reviewers flagged this as critical (see External Validation below)
-- Adversarial test `adversarial_zero_caps_entire_call_chain` verifies the fix
+- Three independent external reviewers flagged this as critical
 
 **External Validation (3 Independent Sources):**
 - Security Review: 7/10 confidence (up from 5/10) — "Core bypass patched"
 - PL Researcher: "Green Light — mathematically sound capability-security model"
 - Technical Assessment: 0.87-0.90 (up from 0.80-0.85) — "Single biggest security/DX footgun removed"
 
-**Known Limitations:**
-- Open effect tail polymorphism at instantiation sites may need additional checking
-- No warnings for unused capabilities (intentional for now — pass-through pattern)
-- Diagnostics could be more polished (span formatting)
-- Capability provisioning (how `main` gets capabilities from runtime) deferred to Issue 011
-
-**Test stats:** 402 tests passing (44 new, 11% increase)
-
-**Example:**
-```strata
-// Extern functions must have cap params matching their effects
-extern fn read_file(path: String, fs: FsCap) -> String & {Fs};
-
-// Functions with effects must have matching capabilities
-fn load_config(fs: FsCap, path: String) -> String & {Fs} {
-    read_file(path, fs)
-}
-
-// This would ERROR — no FsCap for {Fs} effect:
-// fn bad() -> () & {Fs} {}
-```
-
 ---
 
 ### Issue 008: Effect System COMPLETE (Feb 5, 2026)
 
-**What was built:**
-
-**Effect Annotations:**
-- Function effect declarations: `fn f() -> Int & {Fs} { ... }`
-- Multiple effects: `& {Fs, Net, Time, Rand, Ai}`
-- Explicit pure: `& {}`, implicit pure (no annotation)
-- Extern functions: `extern fn read(path: String, fs: FsCap) -> String & {Fs};`
-
-**Effect Inference:**
-- Unannotated functions infer effects from their body
-- Call site effects propagate to enclosing function
-- Multiple effects accumulate across call sites
-- Transitive propagation through call chains
-- Higher-order function effect propagation
-
-**Effect Checking:**
-- Body effects checked against declared annotation
-- Pure functions cannot call effectful functions
-- Unknown effect names produce compile-time errors
-- ADT constructors are always pure
-
-**Implementation:**
-- Bitmask-based EffectRow with open/closed rows
-- Remy-style row unification
+- Remy-style row polymorphism for effects
 - Two-phase constraint solver (type equality then effect subset)
-- Fixpoint accumulation for multi-call-site propagation
-- Effect variable generalization in polymorphic schemes
-
-**Test stats:** 344 tests passing (47 new tests for effects)
+- Bitmask-based EffectRow with open/closed rows
+- Effect inference, checking, and propagation
 
 ---
 
@@ -122,33 +108,17 @@ fn load_config(fs: FsCap, path: String) -> String & {Fs} {
 
 ---
 
-## Starting Issue 010: Affine Types - "The Final Boss"
-
-### Issue 010: Affine Types / Linear Capabilities
-**Status:** Not started
-**Phase:** 3 (Effect System)
-**Depends on:** Issue 009 (complete)
-**Blocks:** Issue 011
-
-**Goal:** Prevent capability duplication with affine/linear type system. Capabilities are use-at-most-once.
-
-**External validation:**
-> "This is the 'Final Boss' of your type system. If you can implement Affine Types without making the language feel like Rust, you will have achieved something truly unique."
-
-**What this enables:**
-- Capabilities can't be duplicated (no `let fs2 = fs; use_both(fs, fs2)`)
-- Capabilities can't be leaked (dropped is fine — affine, not linear)
-- Foundation for Demo 2: Meta-Agent Orchestration with Affine Types
-
----
-
 ## Development Lessons
+
+### Key Learnings from Issue 010
+- **Move checker is a separate pass:** Keeping it out of the unifier/solver preserves inference simplicity
+- **Pessimistic branch join is correct for safety:** If consumed in ANY branch, treat as consumed
+- **Permission vocabulary matters:** "Capability has already been used" is clearer than "moved value" for our target audience
 
 ### Key Learnings from Issue 009
 - **Security enforcement must never be opt-in:** The zero-cap skip guard was a critical bypass. Three independent reviewers caught it. Rule: if removing a guard breaks tests, update the tests.
-- **Multi-source review is now proven:** Three independent reviewers converged on the same critical finding. This process works and must continue for Issue 010.
+- **Multi-source review is now proven:** Three independent reviewers converged on the same critical finding.
 - **Shared validation helpers prevent drift:** `validate_caps_against_effects()` ensures fn and extern paths stay consistent.
-- **Name shadowing is a real attack vector:** Users could define `struct FsCap {}` to confuse the type system. Reserved name check prevents this.
 
 ### Development Philosophy
 - **Soundness over speed** — A type system that lies is worse than no type system
@@ -162,10 +132,10 @@ fn load_config(fs: FsCap, path: String) -> String & {Fs} {
 
 **Codebase:**
 - 4 crates (strata-ast, strata-parse, strata-types, strata-cli)
-- ~9,000+ lines of Rust code
-- 402 tests (all passing)
+- ~10,000+ lines of Rust code
+- 431 tests (all passing)
 - 0 clippy warnings (enforced)
 
 **Velocity:**
-- Issues 001-009: ~2.5 months
+- Issues 001-010: ~2.5 months
 - On track for v0.1 timeline

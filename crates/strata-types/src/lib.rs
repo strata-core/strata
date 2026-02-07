@@ -6,6 +6,7 @@ pub mod adt;
 mod checker;
 mod effects;
 pub mod exhaustive;
+pub mod move_check;
 mod profile;
 mod types;
 
@@ -31,7 +32,7 @@ pub mod infer {
     pub use ctx::TypeCtx;
     pub use solver::Solver;
     pub use subst::Subst;
-    pub use ty::{Ty, TyConst, TypeVarId};
+    pub use ty::{Kind, Ty, TyConst, TypeVarId};
     pub use unifier::{TypeError, Unifier};
 
     #[cfg(test)]

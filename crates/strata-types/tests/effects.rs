@@ -208,16 +208,15 @@ fn pure_fn_calling_pure_fn() {
 
 #[test]
 fn recursive_fn_with_effects() {
-    // Recursive function with effects
+    // Recursive function with effects — cap used once per branch (affine)
     check_ok(
         r#"
         extern fn log(fs: FsCap, msg: String) -> () & {Fs};
         fn countdown(fs: FsCap, n: Int) -> () & {Fs} {
             if n > 0 {
-                log(fs, "tick");
                 countdown(fs, n - 1)
             } else {
-                ()
+                log(fs, "done")
             }
         }
     "#,
@@ -442,9 +441,10 @@ fn if_branches_with_effects() {
 }
 
 #[test]
-fn while_loop_with_effects() {
-    // Effects inside while loop body should propagate
-    check_ok(
+fn while_loop_with_effects_rejected() {
+    // Capability used inside while loop is rejected (affine: single-use).
+    // The cap would be consumed on every iteration, violating at-most-once.
+    let err = check_err(
         r#"
         extern fn log(fs: FsCap, msg: String) -> () & {Fs};
         fn loop_with_log(fs: FsCap, n: Int) -> () & {Fs} {
@@ -455,6 +455,10 @@ fn while_loop_with_effects() {
             }
         }
     "#,
+    );
+    assert!(
+        err.contains("single-use capability") || err.contains("inside loop"),
+        "Expected loop-use error, got: {err}"
     );
 }
 

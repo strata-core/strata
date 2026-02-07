@@ -1,6 +1,6 @@
 # Strata — Layered Safety by Design
 
-> **Status:** v0.0.9 — Capability Types complete
+> **Status:** v0.0.10 — Affine Types (Linear Capabilities) complete
 > **License:** MIT
 > **Language:** Rust
 
@@ -171,7 +171,11 @@ fn ai_agent(
 - Mandatory capability validation: effect `{X}` requires `XCap` in scope
 - No ambient authority — capabilities must be explicitly passed
 - Reserved capability name protection (ADTs cannot shadow capability types)
-- **402 comprehensive tests** (all passing)
+- **Affine types (linear capabilities)** — capabilities are move-only resources
+- Capability transfer via `let x = cap;` (ownership moves, original consumed)
+- Use-after-move detection at type-check time
+- Pessimistic branch analysis (consumed in any branch = consumed afterward)
+- **435 comprehensive tests** (all passing)
 
 ✅ **Security Hardening:**
 - DoS protection: source size (1MB), token count (200K), parser nesting (512), inference depth (512), eval call depth (1000), effect vars (4096)
@@ -181,7 +185,6 @@ fn ai_agent(
 - Parser depth guards balanced on all error paths
 
 📋 **Next Up:**
-- Issue 010: Affine types (linear capabilities)
 - Issue 011: WASM runtime + effect traces + deterministic replay
 
 **Target v0.1:** November 2026 - February 2027
@@ -201,7 +204,7 @@ cargo build --workspace
 # Run an example
 cargo run -p strata-cli -- examples/add.strata
 
-# Run tests (402 tests)
+# Run tests (435 tests)
 cargo test --workspace
 ```
 
@@ -291,7 +294,7 @@ fn add(x: Int, y: Int) -> Int { x + y }
 # Build everything
 cargo build --workspace
 
-# Run all tests (402 tests)
+# Run all tests (435 tests)
 cargo test --workspace
 
 # Run clippy (enforced in CI)
@@ -307,7 +310,7 @@ cargo fmt
 
 **Phase 1 (Complete):** Parser, AST, basic type checking ✅  
 **Phase 2 (Complete):** Functions ✅, hardening ✅, blocks ✅, ADTs ✅  
-**Phase 3 (Current):** Effect system ✅, capabilities ✅, affine types
+**Phase 3 (Complete):** Effect system ✅, capabilities ✅, affine types ✅
 **Phase 4:** Runtime, stdlib, WASM compilation, replay  
 **Phase 5:** Tooling, docs, killer demos, v0.1 launch  
 
@@ -332,7 +335,7 @@ See [`docs/roadmap.md`](docs/roadmap.md) for detailed plans.
 
 ## Contributing
 
-This is currently a personal project. Once it reaches a more stable state (post-Issue 010), contributions will be welcome.
+This is currently a personal project. Once it reaches a more stable state (post-v0.1), contributions will be welcome.
 
 ---
 

@@ -4,6 +4,22 @@ use strata_ast::span::Span;
 
 use crate::effects::{CapKind, EffectRow, EffectVarId};
 
+/// Usage constraints on types.
+///
+/// `Unrestricted` types can be used any number of times (Int, String, Bool, etc.).
+/// `Affine` types can be used *at most once* (capabilities like FsCap, NetCap).
+///
+/// Kinds do NOT participate in unification — they are only queried by the
+/// post-inference move checker to decide what needs single-use tracking.
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Kind {
+    /// Can be used any number of times.
+    Unrestricted,
+    /// Can be used at most once (single-use capabilities).
+    Affine,
+}
+
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 pub struct TypeVarId(pub u32);
@@ -146,6 +162,19 @@ impl Ty {
         Ty::Adt {
             name: name.into(),
             args: vec![],
+        }
+    }
+
+    /// Returns the kind of this type.
+    ///
+    /// Capability types are `Affine` (single-use). All other types are
+    /// `Unrestricted`. Unresolved type variables (`Ty::Var`) are treated
+    /// as `Unrestricted` — the move checker should only call this on
+    /// fully-resolved types after substitution.
+    pub fn kind(&self) -> Kind {
+        match self {
+            Ty::Cap(_) => Kind::Affine,
+            _ => Kind::Unrestricted,
         }
     }
 }

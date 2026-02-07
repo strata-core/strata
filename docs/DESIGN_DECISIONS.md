@@ -350,6 +350,88 @@ add: (Int, Int) -> Int
 
 ---
 
+### Affine Types for Capabilities (Issue 010)
+
+**Decision:** Capabilities are affine (use at most once). Enforcement is a post-inference pass, not a modification to unification.
+
+**Kind system:**
+- `Kind::Unrestricted` — standard types (Int, String, Bool, ADTs, etc.)
+- `Kind::Affine` — capability types (FsCap, NetCap, TimeCap, RandCap, AiCap)
+- Kind is intrinsic to the type — no user annotation needed
+
+**Move checker design:**
+- Separate pass that runs after type inference and constraint solving
+- Does NOT modify unification, constraint generation, or the solver
+- Tracks each affine binding with a generation-based ID (handles shadowing correctly)
+- Pessimistic branch join: if consumed in ANY branch (if/else/match), treat as consumed afterward
+- Loop rejection: capability use inside while body is always an error
+- Let-bindings transfer ownership: `let a = fs;` consumes `fs`, `a` becomes alive
+
+**Why a separate pass (not in the unifier):**
+- Type inference should remain purely about types — mixing linearity into unification creates complexity
+- Separate pass is easier to reason about, test, and extend
+- Same approach used by Rust (borrow checker is a separate pass from type inference)
+- Error messages are clearer when move checking has its own error types
+
+**Why "permission/authority" vocabulary (not "moved value"):**
+- Target audience is SRE/DevOps, not PL researchers
+- "Capability 'fs' has already been used" is more intuitive than "use of moved value"
+- "Permission was transferred" maps to mental model of authority delegation
+
+**Why affine (not linear):**
+- Affine = at most once (can drop without using). Linear = exactly once (must use).
+- Forcing use of every capability would require complex "must-use" tracking
+- Dropping a capability is safe — it just means the authority wasn't exercised
+- Matches real-world intuition: having a key you never use is fine
+
+**Pessimistic branch join:**
+- If a capability is consumed in ANY branch (if/else/match), treat as consumed after the branch
+- Conservative but safe — the alternative (tracking which branch was taken) requires runtime info
+- Consistent with Rust's approach to conditionally-moved values
+
+**Generation-based binding IDs for shadowing:**
+- Each `let x = ...;` gets a unique generation counter, so `BindingId = (name, generation)`
+- Shadowing creates a new generation: `let fs = fs;` → old `fs` consumed (gen 1), new `fs` alive (gen 2)
+- Type lookup keyed by BindingId (not String) so shadowing can't corrupt type resolution
+
+**Left-to-right evaluation order for arguments:**
+- `f(a, b, c)` evaluates `a` then `b` then `c` with cumulative move state
+- `f(fs, fs)` correctly fails: first arg consumes `fs`, second arg sees it consumed
+- Deterministic and matches user expectations from reading left-to-right
+
+**Error vocabulary: permission/transfer/single-use (not Rust's moved/borrow/affine):**
+- Target audience is SRE/DevOps, not PL researchers
+- "capability 'fs' has already been used; permission was transferred" is clearer than "use of moved value"
+- Consistent with Strata's "governed, not forbidden" philosophy
+
+**Status:** Implemented, working.
+
+---
+
+## Strategic Decisions
+
+### S1: Durable Execution is a Runtime Product, Not a Language Feature
+Strata's type system enables durable execution (no ambient authority = serializable state),
+but the checkpoint/resume machinery belongs in `strata-rt`, not `strata-types`.
+
+### S2: Effect Virtualization Before Durable Execution
+Handlers enable testing, sandboxing, and dry-run. Durable execution depends on
+virtualization to handle world-state differences on resume. Build the foundation first.
+
+### S3: `strata plan` is the v0.1 Killer Demo
+Static effect/capability analysis without execution. "Terraform plan for automation."
+No new language features required — walks the typed AST. Ships as Issue 014.
+
+### S4: Capability Attenuation Uses Wrapper Model, Not Subtyping
+Consuming broad cap and producing narrow cap via proxy. Does not require changes to
+type inference.
+
+### S5: Reason Tracing Must Be Structured
+Free-form strings become "needed for deployment" everywhere. Require structured
+reason types. API first, syntax sugar later.
+
+---
+
 ## Syntax Choices
 
 ### Effect Syntax: `& {Net, FS}`

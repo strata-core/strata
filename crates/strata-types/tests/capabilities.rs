@@ -321,19 +321,17 @@ fn capability_in_adt_field_rejected() {
 }
 
 #[test]
-fn capability_in_let_binding_rejected() {
-    // Capabilities cannot be stored in let bindings
-    let err = check_err(
+fn capability_in_let_binding_is_transfer() {
+    // Let-binding a capability is now a transfer (move), not an error.
+    // The move checker enforces single-use: fs is transferred to cap,
+    // and cap is dropped (unused is OK for affine types).
+    check_ok(
         r#"
-        fn bad(fs: FsCap) -> () {
+        fn transfer(fs: FsCap) -> () & {} {
             let cap = fs;
             ()
         }
     "#,
-    );
-    assert!(
-        err.contains("FsCap") || err.contains("capability"),
-        "Expected error about capability in binding, got: {err}"
     );
 }
 
@@ -642,9 +640,9 @@ fn adversarial_let_binding_preserves_effects() {
 
 #[test]
 fn adversarial_let_binding_effectful_fn_infers_correctly() {
-    // Control: Let-binding the result of an effectful call with correct annotation.
-    // (Direct `let f = do_fs` is rejected because arrow type contains FsCap,
-    //  which triggers capability-in-binding check. So we bind the result instead.)
+    // Let-binding the result of an effectful call with correct annotation.
+    // The move checker tracks fs: it's consumed by the call to do_fs,
+    // and the result (String) is unrestricted.
     check_ok(
         r#"
         extern fn do_fs(fs: FsCap) -> String & {Fs};

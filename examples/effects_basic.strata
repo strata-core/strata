@@ -3,6 +3,7 @@
 // Effects track what side effects a function may perform.
 // Strata enforces these at compile time.
 // Capabilities gate effect usage — extern fns must have matching cap params.
+// Capabilities are affine (single-use) — each can be used at most once.
 
 // Extern functions declare their effects and require matching capabilities
 extern fn read_file(path: String, fs: FsCap) -> String & {Fs};
@@ -12,13 +13,12 @@ extern fn fetch(url: String, net: NetCap) -> String & {Net};
 // Pure functions have no effects (& {} or no annotation)
 fn add(x: Int, y: Int) -> Int & {} { x + y }
 
-// Functions that call effectful functions must declare those effects
-fn copy_file(fs: FsCap, src: String, dst: String) -> () & {Fs} {
-    let data = read_file(src, fs);
-    write_file(dst, data, fs)
+// Single-use: each capability used exactly once
+fn save(fs: FsCap, path: String, data: String) -> () & {Fs} {
+    write_file(path, data, fs)
 }
 
-// Multiple effects accumulate
+// Multiple effects: each capability used once for its effect
 fn download_and_save(fs: FsCap, net: NetCap, url: String, path: String) -> () & {Fs, Net} {
     let data = fetch(url, net);
     write_file(path, data, fs)

@@ -1,7 +1,7 @@
 # Strata Roadmap
 
 **Last Updated:** February 7, 2026
-**Current Version:** v0.0.9
+**Current Version:** v0.0.10
 **Target v0.1:** November 2026 - February 2027 (10-14 months from project start)
 
 This document describes the planned roadmap for Strata, organized by development phases. It reflects strategic decisions made in January 2026 to focus on a **minimal, shippable v0.1** that proves core value propositions.
@@ -56,11 +56,11 @@ This document describes the planned roadmap for Strata, organized by development
 - No ambient authority enforced — zero-cap skip eliminated
 - **Status:** COMPLETE (Feb 6-7, 2026) — externally validated by 3 independent sources
 
-**2. Issue 010 (Affine Types):** "The Final Boss"
+**2. Issue 010 (Affine Types):** "The Final Boss" ✅ DONE
 - Prevent capability duplication and leaking
 - Use-at-most-once semantics without Rust-level complexity
-- **Critical quote:** "If you can implement Affine Types without making the language feel like Rust, you will have achieved something truly unique."
-- **Status:** After Issue 009 (2-3 weeks)
+- Move checker as separate post-inference pass
+- **Status:** COMPLETE (Feb 2026) — 435 tests, externally validated
 
 **3. Issue 011 (WASM Runtime + Traces):** Prove the value
 - Formalize main() definition (caps injected by runtime)
@@ -303,7 +303,7 @@ fn unwrap_or(opt: Option<Int>, default: Int) -> Int {
 
 **Timeline:** Months 4-7 (Feb 2026 - May 2026)
 **Focus:** Make effects first-class, checked, and enforceable
-**Status:** Issues 008-009 COMPLETE, Issue 010 is THE CRITICAL PATH
+**Status:** Issues 008-010 COMPLETE
 
 ### Issue 008: Effect System ✅
 **Status:** COMPLETE (Feb 5, 2026)
@@ -381,28 +381,28 @@ fn download_and_save(fs: FsCap, net: NetCap, url: String, path: String) -> () & 
 }
 ```
 
-### Issue 010: Affine Types (Linear Capabilities) — "The Final Boss"
-**Status:** Ready after Issue 009 (2-3 weeks)
+### Issue 010: Affine Types (Linear Capabilities) ✅
+**Status:** COMPLETE (Feb 2026)
 **Phase:** 3 (Effect System)
-**Depends on:** Issue 009
-**Blocks:** Issue 011
+**Tests:** 435 (33 new move checker tests)
+
+**What was built:**
+- Kind system: `Kind::Unrestricted` (Int, String, etc.) vs `Kind::Affine` (FsCap, NetCap, etc.)
+- Move checker as separate post-inference pass (does not modify unifier or solver)
+- Generation-based binding IDs for correct shadowing
+- Pessimistic branch join (if consumed in ANY branch, consumed afterward)
+- Let-binding transfers: `let a = fs;` consumes `fs`, `a` becomes alive
+- Loop rejection: capability use inside while body is always an error
+- Left-to-right argument evaluation with cumulative move state
 
 **External validation:**
 > "This is the 'Final Boss' of your type system. If you can implement Affine Types without making the language feel like Rust, you will have achieved something truly unique."
 
-**Goal:**
-Prevent capability duplication and leaking. Capabilities are *affine* — use at most once.
-
-**Core Concept:**
-Types have kinds:
-- `*` (Unrestricted): Int, String, Bool — can be used any number of times
-- `!` (Affine): FsCap, NetCap, etc. — can be used at most once
-
-**Semantics:**
+**Example working code:**
 ```strata
 fn example(fs: FsCap) -> () & {Fs} {
     use_cap(fs);   // fs moved here
-    use_cap(fs);   // ERROR: use of moved value `fs`
+    use_cap(fs);   // ERROR: capability 'fs' has already been used
 }
 
 // Dropping is allowed (affine, not linear)
@@ -410,19 +410,12 @@ fn drop_ok(fs: FsCap) -> () & {} {
     ()  // fs unused, that's fine
 }
 
-// Return transfers ownership
-fn passthrough(fs: FsCap) -> FsCap & {} {
-    fs
+// Transfer via let-binding
+fn transfer(fs: FsCap) -> () & {Fs} {
+    let local = fs;    // fs consumed, local alive
+    use_cap(local)     // OK
 }
 ```
-
-**Restrictions (v0.1):**
-- Affine values cannot be captured by closures
-- Affine values cannot be used in loops
-- All branches must agree on moved state
-
-**Why this is critical:**
-This enables Demo 2 (Meta-Agent Orchestration with Affine Types), which external validation calls "the Holy Grail of 2026 AI Safety."
 
 **Phase 3 Result:** Complete capability security model with affine types. This is the foundation for everything else.
 
@@ -624,6 +617,26 @@ strata replay failed.json
 
 ---
 
+## Post-v0.1 Vision
+
+### v0.2: The Sandbox Release
+- Effect virtualization — shallow handlers (testing, sandboxing, dry-run)
+- Capability attenuation — coarse-grained least-privilege delegation
+
+### v0.3: The Platform Release
+- Full algebraic effect handlers (with resume/continuations)
+- Structured reason tracing (OTel-compatible audit trails)
+- Native runtime (unlocks full handler performance and durable execution)
+
+### v0.3+: The Orchestration Release
+- Durable execution (runtime product, not language feature)
+- Capability delegation (WASM Component Model FFI)
+- Temporal/leased capabilities (time-bounded authority)
+
+See `docs/feature-candidates.md` for detailed assessments and security analysis.
+
+---
+
 ## Explicitly Deferred to v0.2+
 
 These features are important but not required for v0.1:
@@ -670,8 +683,8 @@ These features are important but not required for v0.1:
 **Phase 2 (Complete):** Type System - Functions, Inference, ADTs, Patterns
 **Months 1-4** ✅
 
-**Phase 3 (In Progress - CRITICAL):** Effect System - Effect checking, Capabilities, Affine Types
-**Months 4-7** (Issues 008-009 ✅, Issue 010 next — THE CRITICAL PATH)
+**Phase 3 (Complete):** Effect System - Effect checking, Capabilities, Affine Types
+**Months 4-7** (Issues 008-010 ✅)
 
 **Phase 4:** Runtime - Stdlib + FFI, Tracing, Replay, WASM  
 **Months 7-10**
@@ -683,14 +696,14 @@ These features are important but not required for v0.1:
 
 **Critical 3-Month Window (Feb-May 2026):**
 - Month 5 (Feb): Issue 009 (Capabilities - Kill the Escape Hatch) ✅ DONE
-- Month 6 (Mar): Issue 010 (Affine Types - The Final Boss) ← NEXT
-- Month 7 (Apr-May): Issue 011 (Runtime + Demos - Prove the Value)
+- Month 6 (Feb): Issue 010 (Affine Types - The Final Boss) ✅ DONE
+- Month 7 (Mar-Apr): Issue 011 (Runtime + Demos - Prove the Value) ← NEXT
 
 **If Issues 009-011 succeed: Technical confidence → 90%+**
 
 ---
 
-## Current Status (v0.0.9)
+## Current Status (v0.0.10)
 
 **Completed:**
 - ✅ Parser & AST (Issue 001)
@@ -703,16 +716,20 @@ These features are important but not required for v0.1:
 - ✅ Security Hardening (Issue 006-Hardening)
 - ✅ ADTs & Pattern Matching (Issue 007)
 - ✅ Effect System (Issue 008)
-- ✅ Capability Types (Issue 009) ← NEW
+- ✅ Capability Types (Issue 009)
+- ✅ Affine Types (Issue 010) ← NEW
 
-**Next Up (The Critical Path):**
-- Issue 010: Affine Types — "The Final Boss" (2-3 weeks)
+**Next Up:**
 - Issue 011: WASM Runtime + Effect Traces (3-4 weeks)
+- Issue 012: Capability Bundles (planning)
+- Issue 013: Standard Library Primitives (planning)
+- Issue 014: CLI Tooling (planning)
+- Issue 015: Error Reporting Polish (planning)
 
 **Project Stats:**
-- 402 tests (all passing)
+- 435 tests (all passing)
 - 4 crates (ast, parse, types, cli)
-- ~9,000+ lines of Rust
+- ~10,000+ lines of Rust
 - 0 clippy warnings (enforced)
 
 **External validation (Feb 2026, 3 independent sources):**
@@ -733,7 +750,7 @@ These features are important but not required for v0.1:
 - ✅ ADTs and pattern matching
 - ✅ Effect system complete
 - ✅ Capability types (Issue 009) — externally validated
-- ⏳ Affine types / linearity (Issue 010 - critical, NEXT)
+- ✅ Affine types / linearity (Issue 010) — externally validated
 - ⏳ Working killer demos (Issue 011)
 
 ### Quality Metrics
@@ -770,10 +787,11 @@ These features are important but not required for v0.1:
 - [`IN_PROGRESS.md`](IN_PROGRESS.md) - Current work and next steps
 - [`DESIGN_DECISIONS.md`](DESIGN_DECISIONS.md) - Technical and architectural choices
 - [`KILLER_DEMOS.md`](KILLER_DEMOS.md) - v0.1 demo specifications (3 core + 3 expansion)
+- [`feature-candidates.md`](feature-candidates.md) - Post-v0.1 feature assessments and security analysis
 - [`issues/`](../issues/) - Detailed issue specifications
 
 ---
 
 **Last Updated:** February 7, 2026
-**Current Version:** v0.0.9
-**Next Review:** After Issue 010 completion
+**Current Version:** v0.0.10
+**Next Review:** After Issue 011 completion

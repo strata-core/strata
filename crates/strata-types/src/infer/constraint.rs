@@ -76,8 +76,6 @@ pub enum InferError {
     ExhaustivenessLimitExceeded { msg: String, span: Span },
     /// Refutable pattern in let binding (should use match instead)
     RefutablePattern { pat_desc: String, span: Span },
-    /// Capability type found in a binding
-    CapabilityInBinding { cap_type: String, span: Span },
     /// Effect variable limit exceeded (DoS protection)
     EffectVarLimitExceeded { limit: u32 },
     /// Cyclic effect variable substitution
@@ -504,19 +502,6 @@ impl InferCtx {
                     return Err(InferError::RefutablePattern {
                         pat_desc: Self::refutable_pattern_desc(pat),
                         span: pat.span(),
-                    });
-                }
-
-                // Check for capability types in the binding type.
-                // This is a best-effort check: value_ty may still contain
-                // unresolved type variables, which will be caught post-solving
-                // when the effect system lands (Issue 008).
-                if crate::adt::contains_capability(&value_ty) {
-                    let cap_name = crate::adt::find_capability_name(&value_ty)
-                        .unwrap_or("capability".to_string());
-                    return Err(InferError::CapabilityInBinding {
-                        cap_type: cap_name,
-                        span: *span,
                     });
                 }
 

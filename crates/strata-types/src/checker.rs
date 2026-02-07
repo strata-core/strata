@@ -80,8 +80,6 @@ pub enum TypeError {
     ExhaustivenessLimitExceeded { msg: String, span: Span },
     /// Refutable pattern in let binding
     RefutablePattern { pat_desc: String, span: Span },
-    /// Capability type found in a let binding
-    CapabilityInBinding { cap_type: String, span: Span },
     /// Effect row mismatch
     EffectMismatch {
         expected: crate::effects::EffectRow,
@@ -125,6 +123,14 @@ pub enum TypeError {
     },
     /// ADT name shadows a built-in capability type
     ReservedCapabilityName { name: String, span: Span },
+    /// Single-use capability has already been used
+    CapabilityAlreadyUsed {
+        name: String,
+        used_at: Span,
+        previous_use: Span,
+    },
+    /// Capability used inside a loop (would be used multiple times)
+    CapabilityUsedInLoop { name: String, used_at: Span },
 }
 
 impl std::fmt::Display for TypeError {
@@ -294,14 +300,6 @@ impl std::fmt::Display for TypeError {
                     span, pat_desc
                 )
             }
-            TypeError::CapabilityInBinding { cap_type, span } => {
-                write!(
-                    f,
-                    "Capability '{}' cannot be stored in a binding at {:?}. \
-                     Pass capabilities as function parameters instead.",
-                    cap_type, span
-                )
-            }
             TypeError::EffectMismatch {
                 expected,
                 found,
@@ -423,6 +421,27 @@ impl std::fmt::Display for TypeError {
                     name,
                     name.to_lowercase().replace("cap", " ").trim(),
                     span
+                )
+            }
+            TypeError::CapabilityAlreadyUsed {
+                name,
+                used_at,
+                previous_use,
+            } => {
+                write!(
+                    f,
+                    "capability '{}' has already been used; \
+                     permission was transferred at {:?}; \
+                     '{}' is no longer available at {:?}",
+                    name, previous_use, name, used_at
+                )
+            }
+            TypeError::CapabilityUsedInLoop { name, used_at } => {
+                write!(
+                    f,
+                    "cannot use single-use capability '{}' inside loop at {:?}; \
+                     '{}' would be used on every iteration",
+                    name, used_at, name
                 )
             }
         }
@@ -621,15 +640,6 @@ impl TypeChecker {
             .apply(&inferred_ty)
             .map_err(|e| subst_error_to_type_error(e, decl.span))?;
 
-        // Check for capability types in the resolved binding type
-        if contains_capability(&final_ty) {
-            let cap_name = find_capability_name(&final_ty).unwrap_or("capability".to_string());
-            return Err(TypeError::CapabilityInBinding {
-                cap_type: cap_name,
-                span: decl.span,
-            });
-        }
-
         // Generalize: free vars in type that aren't already in environment become ∀-bound
         use super::infer::ty::free_vars_env;
         let env_vars = free_vars_env(&self.env);
@@ -768,6 +778,26 @@ impl TypeChecker {
                 decl.name.span,
                 false,
             )?;
+        }
+
+        // ---- Move checker (affine/single-use enforcement) ----
+        // After type checking succeeds, validate that affine bindings (capabilities)
+        // are used at most once. This is a separate validation pass.
+        if let Ty::Arrow(ref resolved_params, _, _) = final_fn_ty {
+            let param_info: Vec<(String, Ty, Span)> = decl
+                .params
+                .iter()
+                .zip(resolved_params.iter())
+                .map(|(param, ty)| {
+                    let resolved = subst
+                        .apply(ty)
+                        .map_err(|e| subst_error_to_type_error(e, param.name.span))?;
+                    Ok((param.name.text.clone(), resolved, param.name.span))
+                })
+                .collect::<Result<Vec<_>, TypeError>>()?;
+
+            crate::move_check::check_function_body(&param_info, &decl.body, &self.env)
+                .map_err(move_error_to_type_error)?;
         }
 
         // NOW generalize: compute env vars excluding this function's own type vars
@@ -1336,9 +1366,6 @@ fn infer_error_to_type_error(err: super::infer::constraint::InferError) -> TypeE
         InferError::RefutablePattern { pat_desc, span } => {
             TypeError::RefutablePattern { pat_desc, span }
         }
-        InferError::CapabilityInBinding { cap_type, span } => {
-            TypeError::CapabilityInBinding { cap_type, span }
-        }
         InferError::EffectVarLimitExceeded { limit } => TypeError::EffectVarLimitExceeded { limit },
         InferError::EffectCycle { var } => TypeError::EffectCycle {
             var,
@@ -1394,6 +1421,25 @@ fn unifier_error_to_type_error(err: super::infer::unifier::TypeError, span: Span
         }
         super::infer::unifier::TypeError::EffectChainTooDeep { depth } => {
             TypeError::EffectChainTooDeep { depth, span }
+        }
+    }
+}
+
+/// Convert a MoveError to a TypeError
+fn move_error_to_type_error(err: crate::move_check::MoveError) -> TypeError {
+    use crate::move_check::MoveError;
+    match err {
+        MoveError::AlreadyUsed {
+            name,
+            used_at,
+            previous_use,
+        } => TypeError::CapabilityAlreadyUsed {
+            name,
+            used_at,
+            previous_use,
+        },
+        MoveError::UsedInLoop { name, used_at } => {
+            TypeError::CapabilityUsedInLoop { name, used_at }
         }
     }
 }
