@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use strata_ast::ast::{
     BinOp, Block, Expr, FieldInit, Lit, MatchArm, Module, Pat, Path, Stmt, UnOp,
 };
+use strata_ast::span::Span;
 use strata_types::CapKind;
 
 use crate::host::{
@@ -55,6 +56,11 @@ pub enum Value {
     Cap(CapKind),
     /// Host function reference (extern fn name)
     HostFn(String),
+    /// Tombstone: affine value already moved. Runtime defense-in-depth.
+    Consumed {
+        var_name: String,
+        moved_at: Span,
+    },
 }
 
 impl std::fmt::Display for Value {
@@ -111,7 +117,16 @@ impl std::fmt::Display for Value {
             }
             Value::Cap(kind) => write!(f, "<cap:{}>", kind.type_name()),
             Value::HostFn(name) => write!(f, "<host_fn:{}>", name),
+            Value::Consumed { var_name, .. } => write!(f, "<consumed:{}>", var_name),
         }
+    }
+}
+
+impl Value {
+    /// Returns true if this value has affine semantics and must be tombstoned after move.
+    /// Keys off runtime value type (Value::Cap), not the static type system.
+    pub fn is_affine(&self) -> bool {
+        matches!(self, Value::Cap(_))
     }
 }
 
@@ -247,6 +262,26 @@ impl Env {
             .map(|b| &b.value)
     }
 
+    /// Destructive read: take the value out and leave a Consumed tombstone.
+    /// Traverses scopes in reverse order (like `get`) and tombstones at the
+    /// ACTUAL binding depth — never inserts a shadow in the current scope.
+    /// This prevents the scope-pop resurrection exploit.
+    pub fn move_out(&mut self, name: &str, span: Span) -> Option<Value> {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(binding) = scope.get_mut(name) {
+                let val = std::mem::replace(
+                    &mut binding.value,
+                    Value::Consumed {
+                        var_name: name.to_string(),
+                        moved_at: span,
+                    },
+                );
+                return Some(val);
+            }
+        }
+        None
+    }
+
     /// Set a variable's value, respecting mutability
     pub fn set(&mut self, name: &str, value: Value) -> Result<()> {
         for scope in self.scopes.iter_mut().rev() {
@@ -299,6 +334,10 @@ pub fn eval_module(m: &Module) -> Result<()> {
     }
 
     // Pass 2: Create closures that capture env with all names defined
+    // NOTE (Issue 012): Closure capture currently clones the entire env.
+    // In v0.2 (Issue 016), closure creation should hollow affine vars from
+    // the parent scope. For v0.1, the static move checker prevents double-use
+    // and runtime tombstoning in Expr::Var provides defense-in-depth.
     for decl in &fn_decls {
         let closure = Value::Closure {
             params: decl.params.iter().map(|p| p.name.text.clone()).collect(),
@@ -744,6 +783,23 @@ fn build_replay_inputs(
     std::collections::BTreeMap::new()
 }
 
+/// Runtime check: bail if the value is a consumed tombstone.
+/// This is defense-in-depth — the static move checker should prevent this,
+/// so hitting this at runtime indicates a move checker bug.
+fn check_not_consumed(val: &Value, var_name: &str) -> Result<()> {
+    if let Value::Consumed { moved_at, .. } = val {
+        bail!(
+            "[CAP-MOVE-RUNTIME] Capability '{}' was already moved at offset {}..{}. \
+             This is a runtime safety violation — the static move checker should have \
+             prevented this. Please report this bug.",
+            var_name,
+            moved_at.start,
+            moved_at.end,
+        );
+    }
+    Ok(())
+}
+
 /// Evaluate an expression
 pub fn eval_expr(env: &mut Env, expr: &Expr) -> Result<ControlFlow> {
     match expr {
@@ -754,11 +810,24 @@ pub fn eval_expr(env: &mut Env, expr: &Expr) -> Result<ControlFlow> {
         Expr::Lit(Lit::Str(s), _) => Ok(ControlFlow::Value(Value::Str(s.clone()))),
         Expr::Lit(Lit::Nil, _) => Ok(ControlFlow::Value(Value::Unit)),
 
-        // Variable lookup
-        Expr::Var(id) => match env.get(&id.text) {
-            Some(v) => Ok(ControlFlow::Value(v.clone())),
-            None => bail!("undefined variable `{}`", id.text),
-        },
+        // Variable lookup — affine values are destructively read (tombstoned)
+        Expr::Var(id) => {
+            // Peek first to check for consumed tombstone or affine value
+            let is_affine = match env.get(&id.text) {
+                Some(v) => {
+                    check_not_consumed(v, &id.text)?;
+                    v.is_affine()
+                }
+                None => bail!("undefined variable `{}`", id.text),
+            };
+            if is_affine {
+                // Destructive read: take value out, leave tombstone
+                let val = env.move_out(&id.text, id.span).unwrap();
+                Ok(ControlFlow::Value(val))
+            } else {
+                Ok(ControlFlow::Value(env.get(&id.text).unwrap().clone()))
+            }
+        }
 
         // Parenthesized expression
         Expr::Paren { inner, .. } => eval_expr(env, inner),
@@ -810,9 +879,19 @@ pub fn eval_expr(env: &mut Env, expr: &Expr) -> Result<ControlFlow> {
         // Path expression (enum constructor)
         Expr::PathExpr(path) => eval_path_expr(env, path),
 
-        // Borrow expression: at runtime, borrow is a no-op (pass-through).
-        // The type system enforces borrowing semantics; runtime uses value semantics.
-        Expr::Borrow(inner, _) => eval_expr(env, inner),
+        // Borrow expression: non-destructive read. When inner is a variable,
+        // we read via env.get() (not move_out) so the capability is NOT consumed.
+        // Borrows are second-class (extern fn params only, type-level enforcement).
+        Expr::Borrow(inner, _) => match inner.as_ref() {
+            Expr::Var(id) => match env.get(&id.text) {
+                Some(v) => {
+                    check_not_consumed(v, &id.text)?;
+                    Ok(ControlFlow::Value(v.clone()))
+                }
+                None => bail!("undefined variable `{}`", id.text),
+            },
+            _ => eval_expr(env, inner),
+        },
     }
 }
 
@@ -1338,11 +1417,21 @@ fn eval_path_expr(env: &mut Env, path: &Path) -> Result<ControlFlow> {
     }
 
     // Single segment - look up in environment (might be a function or variable)
+    // Same affine treatment as Expr::Var
     if segments.len() == 1 {
-        let name = &segments[0].text;
-        match env.get(name) {
-            Some(v) => return Ok(ControlFlow::Value(v.clone())),
-            None => bail!("undefined: {}", name),
+        let seg = &segments[0];
+        let is_affine = match env.get(&seg.text) {
+            Some(v) => {
+                check_not_consumed(v, &seg.text)?;
+                v.is_affine()
+            }
+            None => bail!("undefined: {}", seg.text),
+        };
+        if is_affine {
+            let val = env.move_out(&seg.text, seg.span).unwrap();
+            return Ok(ControlFlow::Value(val));
+        } else {
+            return Ok(ControlFlow::Value(env.get(&seg.text).unwrap().clone()));
         }
     }
 
@@ -2303,5 +2392,178 @@ mod tests {
 
         let cf = eval_expr(&mut env, &expr).unwrap();
         assert!(matches!(cf, ControlFlow::Value(Value::Int(6))));
+    }
+
+    // ================================================================
+    // Issue 012: Affine Integrity — Runtime tombstone tests
+    // ================================================================
+
+    #[test]
+    fn test_affine_cap_tombstoned_after_use() {
+        let mut env = Env::new();
+        env.define("fs".to_string(), Value::Cap(CapKind::Fs), false);
+
+        // First access should succeed and return the cap
+        let expr = Expr::Var(ident("fs"));
+        let cf = eval_expr(&mut env, &expr).unwrap();
+        assert!(matches!(cf, ControlFlow::Value(Value::Cap(CapKind::Fs))));
+
+        // Value in env should now be Consumed
+        let val = env.get("fs").unwrap();
+        assert!(matches!(val, Value::Consumed { .. }));
+    }
+
+    #[test]
+    fn test_consumed_cap_gives_runtime_error() {
+        let mut env = Env::new();
+        env.define("fs".to_string(), Value::Cap(CapKind::Fs), false);
+
+        // First use succeeds
+        let expr = Expr::Var(ident("fs"));
+        eval_expr(&mut env, &expr).unwrap();
+
+        // Second use hits the tombstone
+        let err = eval_expr(&mut env, &expr).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("CAP-MOVE-RUNTIME"), "expected CAP-MOVE-RUNTIME, got: {msg}");
+        assert!(msg.contains("fs"), "error should mention var name, got: {msg}");
+    }
+
+    #[test]
+    fn test_consumed_error_message_includes_span() {
+        let mut env = Env::new();
+        env.define("net".to_string(), Value::Cap(CapKind::Net), false);
+
+        // Use a span with identifiable offsets
+        let id = Ident {
+            text: "net".to_string(),
+            span: Span { start: 42, end: 45 },
+        };
+        let expr = Expr::Var(id.clone());
+        eval_expr(&mut env, &expr).unwrap();
+
+        // Second use should mention the original span
+        let err = eval_expr(&mut env, &Expr::Var(id)).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("42..45"), "error should include moved_at span, got: {msg}");
+    }
+
+    #[test]
+    fn test_borrow_does_not_tombstone() {
+        let mut env = Env::new();
+        env.define("fs".to_string(), Value::Cap(CapKind::Fs), false);
+
+        // Borrow should NOT consume
+        let borrow_expr = Expr::Borrow(Box::new(Expr::Var(ident("fs"))), sp());
+        let cf = eval_expr(&mut env, &borrow_expr).unwrap();
+        assert!(matches!(cf, ControlFlow::Value(Value::Cap(CapKind::Fs))));
+
+        // Cap should still be alive in env (not consumed)
+        let val = env.get("fs").unwrap();
+        assert!(matches!(val, Value::Cap(CapKind::Fs)));
+
+        // Can still borrow again
+        let cf2 = eval_expr(&mut env, &borrow_expr).unwrap();
+        assert!(matches!(cf2, ControlFlow::Value(Value::Cap(CapKind::Fs))));
+    }
+
+    #[test]
+    fn test_non_affine_values_unaffected() {
+        let mut env = Env::new();
+        env.define("x".to_string(), Value::Int(42), false);
+        env.define("s".to_string(), Value::Str("hello".to_string()), false);
+
+        // Non-affine values can be read multiple times without tombstoning
+        let expr_x = Expr::Var(ident("x"));
+        let expr_s = Expr::Var(ident("s"));
+
+        eval_expr(&mut env, &expr_x).unwrap();
+        eval_expr(&mut env, &expr_x).unwrap(); // second read fine
+
+        eval_expr(&mut env, &expr_s).unwrap();
+        eval_expr(&mut env, &expr_s).unwrap(); // second read fine
+
+        // Values still intact
+        assert!(matches!(env.get("x"), Some(Value::Int(42))));
+    }
+
+    #[test]
+    fn test_scope_tombstone_at_actual_depth() {
+        // Regression test for Grok's scoping exploit.
+        // If move_out inserts Consumed as a shadow in the CURRENT scope
+        // (instead of at the actual binding depth), popping the inner scope
+        // would resurrect the capability.
+        let mut env = Env::new();
+        env.define("fs".to_string(), Value::Cap(CapKind::Fs), false);
+
+        // Push inner scope and consume there
+        env.push_scope();
+        let expr = Expr::Var(ident("fs"));
+        eval_expr(&mut env, &expr).unwrap();
+
+        // Pop inner scope
+        env.pop_scope().unwrap();
+
+        // Outer scope should have Consumed — NOT the original Cap
+        let val = env.get("fs").unwrap();
+        assert!(
+            matches!(val, Value::Consumed { .. }),
+            "expected Consumed after inner scope pop, got: {:?}",
+            val
+        );
+    }
+
+    #[test]
+    fn test_nested_scope_tombstone_prevents_reuse() {
+        // Deep nesting: cap defined in scope 0, consumed in scope 2
+        let mut env = Env::new();
+        env.define("cap".to_string(), Value::Cap(CapKind::Time), false);
+
+        env.push_scope(); // scope 1
+        env.push_scope(); // scope 2
+
+        // Consume in scope 2
+        let expr = Expr::Var(ident("cap"));
+        eval_expr(&mut env, &expr).unwrap();
+
+        env.pop_scope().unwrap(); // back to scope 1
+        env.pop_scope().unwrap(); // back to scope 0
+
+        // Should be Consumed in scope 0, not resurrected
+        let err = eval_expr(&mut env, &expr).unwrap_err();
+        assert!(err.to_string().contains("CAP-MOVE-RUNTIME"));
+    }
+
+    #[test]
+    fn test_move_out_returns_none_for_undefined() {
+        let mut env = Env::new();
+        let result = env.move_out("nonexistent", sp());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_borrow_of_consumed_cap_gives_error() {
+        let mut env = Env::new();
+        env.define("fs".to_string(), Value::Cap(CapKind::Fs), false);
+
+        // Consume via Var
+        let expr = Expr::Var(ident("fs"));
+        eval_expr(&mut env, &expr).unwrap();
+
+        // Borrow after consume should also fail
+        let borrow_expr = Expr::Borrow(Box::new(Expr::Var(ident("fs"))), sp());
+        let err = eval_expr(&mut env, &borrow_expr).unwrap_err();
+        assert!(err.to_string().contains("CAP-MOVE-RUNTIME"));
+    }
+
+    #[test]
+    fn test_is_affine() {
+        assert!(Value::Cap(CapKind::Fs).is_affine());
+        assert!(Value::Cap(CapKind::Net).is_affine());
+        assert!(!Value::Int(42).is_affine());
+        assert!(!Value::Str("hello".to_string()).is_affine());
+        assert!(!Value::Bool(true).is_affine());
+        assert!(!Value::Unit.is_affine());
+        assert!(!Value::HostFn("read_file".to_string()).is_affine());
     }
 }
