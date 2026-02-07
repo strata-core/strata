@@ -536,6 +536,32 @@ fn passthrough(fs: FsCap, x: Int) -> Int { x + 1 }
 
 ---
 
+### Pre-011 Security Hardening (v0.0.10.1)
+
+**Completed:** February 2026
+**Test Coverage:** 442 tests (7 new hardening tests)
+
+**Security fix: `Ty::kind()` propagates affinity through compound types**
+
+- `Ty::kind()` now recurses into ADT type args, tuple elements, and list inner type
+- Generic ADTs containing capabilities (e.g., `Smuggler<FsCap>`) are correctly classified as `Kind::Affine`
+- Prevents capability laundering: wrapping a cap in a generic ADT and copying the wrapper no longer bypasses affine enforcement
+- 4 new tests covering exploit chain, negative case (unrestricted generic), nested generics, and pattern extraction
+
+**Defense-in-depth: Move checker resolves generic field types**
+
+- Move checker accepts `AdtRegistry` for ADT definition lookup
+- `introduce_pattern_bindings` for `Pat::Variant` and `Pat::Struct` resolves generic field types by substituting scrutinee type args into ADT definition field types
+- When caps-in-ADTs ban is lifted, extracted fields will be correctly tracked as affine
+
+**Closure affinity documentation**
+
+- `Ty::kind()` documented with the rule that closures capturing affine values must themselves be affine
+- Not enforceable until closures gain capture tracking; current enforcement is absence of closure syntax
+- Test verifies closure syntax does not parse
+
+---
+
 ### Issue 010: Affine Types / Linear Capabilities (Complete)
 
 **Completed:** February 2026
@@ -545,7 +571,7 @@ fn passthrough(fs: FsCap, x: Int) -> Int { x + 1 }
 
 **Kind System:**
 - `Kind` enum: `Unrestricted` (free use) and `Affine` (at-most-once)
-- `Ty::kind()` method: `Ty::Cap(_)` returns `Affine`, all others `Unrestricted`
+- `Ty::kind()` method: `Ty::Cap(_)` returns `Affine`; compound types propagate affinity from contents
 - Kind is intrinsic to the type — no user annotation needed
 
 **Move Checker (post-inference pass):**
@@ -612,7 +638,7 @@ fn looped(fs: FsCap) -> () & {Fs} {
 | Auditability | Capability usage visible in signatures | 009 |
 
 **Known Limitations (v0.1):**
-- Affine ADTs not supported (ADT containing cap field would need kind inference)
+- Affine ADTs partially supported: generic ADTs with cap type args are affine (v0.0.10.1), but direct cap fields in ADT definitions remain banned
 - No closure/lambda in the AST, so closure capture checking is deferred
 - No borrowing/referencing of capabilities (`&FsCap` for read-only access)
 - Module-level let bindings with capability types are not move-checked
@@ -690,7 +716,7 @@ strata-cli --eval file.strata
 # Build all crates
 cargo build --workspace
 
-# Run all tests (435 tests)
+# Run all tests (442 tests)
 cargo test --workspace
 
 # Run with clippy (enforced in CI)
@@ -723,9 +749,9 @@ strata-ast       (no deps)
 ## Project Stats
 
 - **Crates:** 4 (ast, parse, types, cli)
-- **Total Tests:** 435 (parser: 48, types: 174, cli: 26, effects: 41, capabilities: 46, move_check: 33, others: 67)
+- **Total Tests:** 442 (parser: 48, types: 174, cli: 26, effects: 41, capabilities: 49, move_check: 37, others: 67)
 - **Lines of Code:** ~10,000+ (estimate)
-- **Issues Completed:** 10 + hardening (Parser, Effects, Type Scaffolding, Basic Type Checking, Functions, Blocks, ADTs, Security Hardening, Effect System, Capability Types, Affine Types)
+- **Issues Completed:** 10 + hardening (Parser, Effects, Type Scaffolding, Basic Type Checking, Functions, Blocks, ADTs, Security Hardening, Effect System, Capability Types, Affine Types, Pre-011 Hardening)
 - **Example Files:** 30+
 
 ---

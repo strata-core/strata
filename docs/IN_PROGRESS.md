@@ -1,13 +1,30 @@
 # Strata: In Progress
 
 **Last Updated:** February 2026
-**Current Version:** Post-Issue 010
-**Current Focus:** Issue 011 (WASM Runtime + Effect Traces)
-**Progress:** Issues 001-010 complete
+**Current Version:** v0.0.10.1
+**Current Focus:** Issue 011a (Traced Runtime — Interpreter-based)
+**Progress:** Issues 001-010 complete + pre-011 security hardening
 
 ---
 
 ## Current Status
+
+### v0.0.10.1: Pre-011 Security Hardening (Feb 2026)
+
+**Security fix: Kind propagation for compound types**
+
+`Ty::kind()` now propagates affinity through ADTs, tuples, and lists. Previously, `Smuggler<FsCap>` was classified as `Kind::Unrestricted`, allowing capability duplication through generic wrappers — a full capability bypass.
+
+**What was fixed:**
+- `Ty::kind()` recurses into `Ty::Adt` type args, `Ty::Tuple` elements, and `Ty::List` inner type
+- Generic ADTs containing capabilities (e.g., `Smuggler<FsCap>`) are correctly `Kind::Affine`
+- Defense-in-depth: move checker resolves generic field types through ADT registry substitution
+- `Ty::kind()` documented for future closure affinity propagation
+
+**New tests:** 7 tests (4 exploit/negative, 2 ban regression, 1 closure ban)
+**Total tests:** 442
+
+---
 
 ### Issue 010: Affine Types / Linear Capabilities COMPLETE (Feb 2026)
 
@@ -15,7 +32,7 @@
 
 **Kind System:**
 - `Kind` enum: `Unrestricted` (free use) and `Affine` (at-most-once)
-- `Ty::kind()` method: `Ty::Cap(_)` → `Affine`, all others → `Unrestricted`
+- `Ty::kind()` method: `Ty::Cap(_)` → `Affine`; compound types propagate affinity from contents
 - Kind is intrinsic to the type — no user annotation needed
 
 **Move Checker (post-inference pass):**
@@ -49,7 +66,7 @@
 | Explicit flow | Capabilities threaded through calls | 009 + 010 |
 | Auditability | Capability usage visible in signatures | 009 |
 
-**Test stats:** 431 tests passing (29 new move checker tests)
+**Test stats:** 442 tests passing (33 move checker + 7 hardening)
 
 ---
 
@@ -133,7 +150,7 @@
 **Codebase:**
 - 4 crates (strata-ast, strata-parse, strata-types, strata-cli)
 - ~10,000+ lines of Rust code
-- 431 tests (all passing)
+- 442 tests (all passing)
 - 0 clippy warnings (enforced)
 
 **Velocity:**
