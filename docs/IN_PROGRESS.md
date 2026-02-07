@@ -2,59 +2,54 @@
 
 **Last Updated:** February 2026
 **Current Version:** v0.0.11
-**Current Focus:** Post-011a — next issue TBD
+**Current Focus:** Issue 012 — Affine Integrity Sprint
 **Progress:** Issues 001-010 + 011a complete
 
 ---
 
 ## Current Status
 
-### Issue 011a: Traced Runtime COMPLETE (Feb 2026)
+### Issue 012: Affine Integrity Sprint — PLANNING
 
-**What was built:**
+**Goal:** Harden the interpreter to enforce affine semantics at runtime
+(defense-in-depth). Even a Move Checker bug cannot lead to capability
+duplication.
 
-**5 phases + hardening, 41 new tests (493 total):**
+**What will be built:**
+- `Value::Consumed` tombstone for moved values
+- `Env::move_out()` — destructive read for affine variables
+- Closure capture hollowing
+- Match scrutinee consumption
+- Scope-aware tombstoning (critical finding from adversarial review)
 
-**Phase 1: Extern-Only Borrowing**
-- `&CapType` syntax in extern fn params — borrow without consuming
-- `Ty::Ref(Box<Ty>)` reference type, restricted to extern fn params
-- Move checker treats borrows as non-consuming
+**Why now:** The interpreter is the v0.1 runtime and the Golden Specification.
+It must be correct before we expand the stdlib (Issue 013).
 
-**Phase 2: Host Function Dispatch**
-- `HostRegistry` with 4 built-in host fns (read_file, write_file, now, random_int)
-- Capability injection at main() entry point
-- Position-aware dispatch via ExternFnMeta
+**v0.1 critical path:** 012 → 013 → 014 → 015
 
-**Phase 3: Effect Trace Emission**
-- Streaming JSONL trace for every host fn call
-- SHA-256 content hashing for outputs > 1KB
-- Single dispatch path: always `dispatch_traced()`
+---
 
-**Phase 4: Deterministic Replay**
-- `TraceReplayer` loads JSONL, validates operations + inputs
-- Structured `ReplayError` enum for mismatch reporting
-- `run_module_replay()` with `verify_complete()`
+### Issue Renumbering (Feb 2026)
 
-**Phase 5: CLI Integration**
-- `strata run` / `strata replay` / `strata parse` subcommands
-- `--trace` (audit, hashed) and `--trace-full` (replay-capable) flags
-- Trace summary output, example program + documentation
+After completing 011a, the roadmap was reorganized. Compilation (WASM/native)
+deferred to v0.2+, changing the dependency chain:
 
-**Hardening (6 fixes, 16 new tests)**
-- Ty::Ref second-class enforcement, TraceValue tagged serialization
-- Trace write failures abort execution, TraceRecord schema versioning
-- Cap/Closure/Tuple rejection in deserialization, input hashing in audit mode
-
-**End-to-end workflow:**
-```bash
-strata run program.strata --trace-full trace.jsonl
-strata replay trace.jsonl program.strata
-# "Replay successful: 3 effects replayed."
-```
+| Old | Old Title | New | New Title | Notes |
+|-----|-----------|-----|-----------|-------|
+| (new) | — | 012 | Affine Integrity Sprint | Runtime hardening |
+| 013 | Standard Library Primitives | 013 | (stays) | Removed cap bundles dep |
+| 014 | CLI Tooling | 014 | `strata plan` + CLI Polish | Partly shipped in 011a |
+| 015 | Error Reporting Polish | 015 | (stays) | No change |
+| 012 | Hierarchical Cap Bundles | 016 | (demoted) | Deferred to v0.2 |
 
 ---
 
 ### Previous Completions
+
+**Issue 011a: Traced Runtime** (Feb 2026, v0.0.11)
+- 5 phases + hardening, 41 new tests (493 total)
+- Borrowing, host dispatch, trace emission, replay, CLI
+- 6 hardening fixes from external review
 
 **Issue 010: Affine Types / Linear Capabilities** (Feb 2026)
 - Kind system, move checker, single-use enforcement
@@ -78,12 +73,15 @@ strata replay trace.jsonl program.strata
 - **Position-aware dispatch**: Walk the extern fn's type signature to classify params as Cap vs Data. Don't filter by runtime `Value::Cap(_)` type.
 - **Replay before live**: Check replayer BEFORE live dispatch in the call path. Replayer takes priority.
 - **Security enforcement unconditional**: Missing ExternFnMeta is a hard error, not a graceful degradation.
+- **Tagged serialization**: Never serialize values without preserving type identity (Str vs Int).
+- **Scope-aware operations**: ANY Env operation targeting a specific binding must resolve through the full scope chain, never just the current scope.
 
 ### Development Philosophy
 - **Soundness over speed** — A type system that lies is worse than no type system
 - **Foundation integrity** — Fix bugs before they compound
 - **Post-completion review** — Always audit before moving forward
 - **Security enforcement must never be opt-in** — The zero-cap skip incident
+- **Defense in depth** — Static checks AND runtime enforcement
 
 ---
 
