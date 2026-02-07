@@ -171,9 +171,34 @@ impl Ty {
     /// `Unrestricted`. Unresolved type variables (`Ty::Var`) are treated
     /// as `Unrestricted` — the move checker should only call this on
     /// fully-resolved types after substitution.
+    ///
+    /// RULE: Closures capturing affine values must themselves be affine.
+    /// Currently not enforceable because Ty::Arrow doesn't track captures
+    /// (closures/lambdas are not yet a language feature). The absence of
+    /// closure syntax is the current enforcement mechanism.
+    /// When closures gain capture tracking (post-borrowing), add:
+    ///   Ty::Arrow with captured_env → if captured_env.contains_affine() { return Kind::Affine; }
     pub fn kind(&self) -> Kind {
         match self {
             Ty::Cap(_) => Kind::Affine,
+            // Compound types containing affine components are themselves affine.
+            // This prevents capability laundering through generic ADTs:
+            // e.g. Smuggler<FsCap> must be affine so it can't be copied.
+            Ty::Adt { args, .. } => {
+                if args.iter().any(|arg| arg.kind() == Kind::Affine) {
+                    Kind::Affine
+                } else {
+                    Kind::Unrestricted
+                }
+            }
+            Ty::Tuple(tys) => {
+                if tys.iter().any(|ty| ty.kind() == Kind::Affine) {
+                    Kind::Affine
+                } else {
+                    Kind::Unrestricted
+                }
+            }
+            Ty::List(inner) => inner.kind(),
             _ => Kind::Unrestricted,
         }
     }

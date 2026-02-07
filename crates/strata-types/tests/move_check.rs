@@ -424,6 +424,135 @@ fn match_tuple_destructure_double_use_error() {
 }
 
 // ============================================================================
+// EXPLOIT PROBE: Generic ADT capability laundering
+// ============================================================================
+
+#[test]
+fn generic_adt_with_cap_is_affine() {
+    // Smuggler<FsCap> must be affine — copying it duplicates the capability.
+    let err = check_err(
+        r#"
+        enum Smuggler<T> { Hold(T), Empty }
+        extern fn use_fs(fs: FsCap) -> () & {Fs};
+
+        fn launder(fs: FsCap) -> () & {Fs} {
+            let wrapped = Smuggler::Hold(fs);
+            let copy1 = wrapped;
+            let copy2 = wrapped;
+
+            match copy1 {
+                Smuggler::Hold(x) => use_fs(x),
+                Smuggler::Empty => (),
+            };
+            match copy2 {
+                Smuggler::Hold(y) => use_fs(y),
+                Smuggler::Empty => (),
+            }
+        }
+    "#,
+    );
+    assert!(
+        err.contains("already been used"),
+        "Expected double-use error on wrapped ADT containing cap, got: {err}"
+    );
+}
+
+#[test]
+fn generic_adt_without_cap_is_unrestricted() {
+    // Smuggler<Int> is unrestricted — copying is fine.
+    check_ok(
+        r#"
+        enum Smuggler<T> { Hold(T), Empty }
+        fn ok() -> () & {} {
+            let w = Smuggler::Hold(42);
+            let a = w;
+            let b = w;
+            ()
+        }
+    "#,
+    );
+}
+
+#[test]
+fn nested_generic_adt_with_cap_is_affine() {
+    // Outer<FsCap> contains Smuggler<FsCap> — both are affine.
+    let err = check_err(
+        r#"
+        enum Smuggler<T> { Hold(T), Empty }
+        enum Outer<T> { Inner(Smuggler<T>) }
+        fn bad(fs: FsCap) -> () & {} {
+            let nested = Outer::Inner(Smuggler::Hold(fs));
+            let a = nested;
+            let b = nested;
+            ()
+        }
+    "#,
+    );
+    assert!(
+        err.contains("already been used"),
+        "Expected double-use error on nested ADT containing cap, got: {err}"
+    );
+}
+
+// ============================================================================
+// CLOSURE CAP CAPTURE BAN — closures don't exist yet, so caps can't leak
+// ============================================================================
+
+#[test]
+fn closure_syntax_not_supported() {
+    // Closures/lambdas are not yet a language feature. This is the current
+    // enforcement mechanism for the closure-cap-capture ban: you can't write
+    // a closure that captures a capability because closures don't parse.
+    //
+    // When closures are added, Ty::kind() must propagate affinity through
+    // Arrow types with captured environments (see comment in ty.rs).
+    let src = r#"
+        fn bad(fs: FsCap) -> () & {Fs} {
+            let action = || { fs };
+            action()
+        }
+    "#;
+    // This must fail to parse — closure syntax doesn't exist
+    assert!(
+        strata_parse::parse_str("<test>", src).is_err(),
+        "Closure syntax should not parse; if this passes, closures were added \
+         and the move checker needs closure-cap-capture enforcement"
+    );
+}
+
+// TEST: closure_capturing_cap_is_affine
+// When closures are added, a closure that captures a cap must be affine.
+// This means the closure can be defined once and called at most once.
+//
+// TODO: uncomment when closures are implemented
+//
+// #[test]
+// fn closure_capturing_cap_is_affine() {
+//     let err = check_err(r#"
+//         extern fn read_file(fs: FsCap, path: String) -> String & {Fs};
+//         fn bad(fs: FsCap) -> () & {Fs} {
+//             let action = |path: String| { read_file(fs, path) };
+//             action("/a");  // OK — first call
+//             action("/b");  // ERROR — closure is affine, already consumed
+//         }
+//     "#);
+//     assert!(err.contains("already been used"),
+//         "Expected affine closure double-call error, got: {err}");
+// }
+//
+// #[test]
+// fn closure_capturing_unrestricted_is_unrestricted() {
+//     // A closure that only captures unrestricted values can be called freely
+//     check_ok(r#"
+//         fn ok() -> Int & {} {
+//             let x = 42;
+//             let action = || { x + 1 };
+//             action() + action()
+//         }
+//     "#);
+// }
+
+// ============================================================================
 // NEGATIVE TESTS — Invalid programs that the move checker should reject
 // ============================================================================
 

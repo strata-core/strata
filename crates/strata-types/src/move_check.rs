@@ -8,6 +8,7 @@
 //! bindings need single-use tracking, and resolves polymorphic return types
 //! by manually instantiating callee schemes with known argument types.
 
+use crate::adt::AdtRegistry;
 use crate::infer::ty::{Kind, Scheme, Ty, TypeVarId};
 use std::collections::HashMap;
 use strata_ast::ast::{Block, Expr, Pat, Stmt};
@@ -104,10 +105,12 @@ pub struct MoveChecker<'a> {
     /// The environment with generalized function schemes (for resolving
     /// polymorphic call return types).
     env: &'a HashMap<String, Scheme>,
+    /// ADT registry for resolving generic field types in pattern destructuring.
+    adt_registry: &'a AdtRegistry,
 }
 
 impl<'a> MoveChecker<'a> {
-    fn new(env: &'a HashMap<String, Scheme>) -> Self {
+    fn new(env: &'a HashMap<String, Scheme>, adt_registry: &'a AdtRegistry) -> Self {
         MoveChecker {
             name_to_id: HashMap::new(),
             tracked: HashMap::new(),
@@ -116,6 +119,7 @@ impl<'a> MoveChecker<'a> {
             errors: Vec::new(),
             binding_types: HashMap::new(),
             env,
+            adt_registry,
         }
     }
 
@@ -234,6 +238,106 @@ impl<'a> MoveChecker<'a> {
                 self.tracked.insert(id.clone(), base_tracked.clone());
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // ADT field type resolution for pattern destructuring
+    // -----------------------------------------------------------------------
+
+    /// Resolve variant field types by matching the scrutinee type against the
+    /// ADT definition and substituting generic type parameters.
+    ///
+    /// For example, if `Box<T>` has variant `Val(T)` and the scrutinee is
+    /// `Box<FsCap>`, this returns `[FsCap]` for the variant fields.
+    ///
+    /// Returns None if the ADT or variant can't be resolved (fallback to unit).
+    fn resolve_variant_field_types(
+        &self,
+        path: &strata_ast::ast::Path,
+        scrutinee_ty: &Ty,
+    ) -> Option<Vec<Ty>> {
+        // Path for a variant is e.g. ["Box", "Val"] — first segment is ADT name
+        if path.segments.len() < 2 {
+            return None;
+        }
+        let adt_name = &path.segments[0].text;
+        let variant_name = &path.segments[1].text;
+
+        let adt_def = self.adt_registry.get(adt_name)?;
+        let variant = adt_def.find_variant(variant_name)?;
+
+        let raw_field_types = match &variant.fields {
+            crate::adt::VariantFields::Unit => return Some(vec![]),
+            crate::adt::VariantFields::Tuple(tys) => tys,
+        };
+
+        // Build substitution: type_params[i] → scrutinee_args[i]
+        let scrutinee_args = match scrutinee_ty {
+            Ty::Adt { args, .. } => args,
+            _ => return None,
+        };
+
+        if adt_def.type_params.is_empty() || scrutinee_args.is_empty() {
+            // Non-generic ADT — raw field types are already concrete
+            return Some(raw_field_types.clone());
+        }
+
+        // Map type param TypeVarIds to the concrete types from the scrutinee.
+        // ADT type params are registered with TypeVarId(0), TypeVarId(1), etc.
+        let mut mapping: HashMap<TypeVarId, Ty> = HashMap::new();
+        for (i, arg) in scrutinee_args.iter().enumerate() {
+            mapping.insert(TypeVarId(i as u32), arg.clone());
+        }
+
+        Some(
+            raw_field_types
+                .iter()
+                .map(|t| apply_type_mapping(t, &mapping))
+                .collect(),
+        )
+    }
+
+    /// Resolve struct field types by matching the scrutinee type against the
+    /// ADT definition and substituting generic type parameters.
+    ///
+    /// Returns a map from field name to resolved type, or None if unresolvable.
+    fn resolve_struct_field_types(
+        &self,
+        path: &strata_ast::ast::Path,
+        scrutinee_ty: &Ty,
+    ) -> Option<HashMap<String, Ty>> {
+        let adt_name = &path.segments.first()?.text;
+
+        let adt_def = self.adt_registry.get(adt_name)?;
+        let fields = adt_def.fields()?;
+
+        // Build substitution from scrutinee args
+        let scrutinee_args = match scrutinee_ty {
+            Ty::Adt { args, .. } => args,
+            _ => return None,
+        };
+
+        if adt_def.type_params.is_empty() || scrutinee_args.is_empty() {
+            // Non-generic struct — raw field types are already concrete
+            return Some(
+                fields
+                    .iter()
+                    .map(|f| (f.name.clone(), f.ty.clone()))
+                    .collect(),
+            );
+        }
+
+        let mut mapping: HashMap<TypeVarId, Ty> = HashMap::new();
+        for (i, arg) in scrutinee_args.iter().enumerate() {
+            mapping.insert(TypeVarId(i as u32), arg.clone());
+        }
+
+        Some(
+            fields
+                .iter()
+                .map(|f| (f.name.clone(), apply_type_mapping(&f.ty, &mapping)))
+                .collect(),
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -553,15 +657,34 @@ impl<'a> MoveChecker<'a> {
                     }
                 }
             }
-            Pat::Variant { fields, .. } => {
-                // Caps in ADT fields are banned, so variant fields are unrestricted
-                for p in fields {
-                    self.introduce_pattern_bindings(p, &Ty::unit());
+            Pat::Variant { path, fields, .. } => {
+                // DEFENSE-IN-DEPTH: When the caps-in-ADTs ban is lifted (post-linear
+                // types), this substitution ensures generic variant fields are properly
+                // resolved so capability bindings are tracked as affine.
+                // Currently the ban prevents caps from reaching ADT fields, so all
+                // field types resolve to unrestricted. But when the ban is lifted,
+                // e.g. Box<FsCap> matched as Box::Val(inner), inner must be FsCap.
+                let field_types = self.resolve_variant_field_types(path, ty);
+                let unit = Ty::unit();
+                for (i, p) in fields.iter().enumerate() {
+                    let field_ty = field_types
+                        .as_ref()
+                        .and_then(|tys| tys.get(i))
+                        .unwrap_or(&unit);
+                    self.introduce_pattern_bindings(p, field_ty);
                 }
             }
-            Pat::Struct { fields, .. } => {
+            Pat::Struct { path, fields, .. } => {
+                // DEFENSE-IN-DEPTH: Same as variant — resolve struct field types
+                // through the generic substitution when possible.
+                let field_types = self.resolve_struct_field_types(path, ty);
+                let unit = Ty::unit();
                 for f in fields {
-                    self.introduce_pattern_bindings(&f.pat, &Ty::unit());
+                    let field_ty = field_types
+                        .as_ref()
+                        .and_then(|m| m.get(&f.name.text))
+                        .unwrap_or(&unit);
+                    self.introduce_pattern_bindings(&f.pat, field_ty);
                 }
             }
         }
@@ -657,8 +780,9 @@ pub fn check_function_body(
     params: &[(String, Ty, Span)],
     body: &Block,
     env: &HashMap<String, Scheme>,
+    adt_registry: &AdtRegistry,
 ) -> Result<(), MoveError> {
-    let mut checker = MoveChecker::new(env);
+    let mut checker = MoveChecker::new(env, adt_registry);
 
     // Introduce function parameters as alive bindings
     for (name, ty, span) in params {

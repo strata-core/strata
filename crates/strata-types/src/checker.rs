@@ -796,8 +796,13 @@ impl TypeChecker {
                 })
                 .collect::<Result<Vec<_>, TypeError>>()?;
 
-            crate::move_check::check_function_body(&param_info, &decl.body, &self.env)
-                .map_err(move_error_to_type_error)?;
+            crate::move_check::check_function_body(
+                &param_info,
+                &decl.body,
+                &self.env,
+                &self.adt_registry,
+            )
+            .map_err(move_error_to_type_error)?;
         }
 
         // NOW generalize: compute env vars excluding this function's own type vars

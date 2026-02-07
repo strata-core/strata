@@ -383,6 +383,69 @@ fn multiple_cap_params_same_kind() {
 }
 
 // ============================================================================
+// CAPS-IN-ADT BAN REGRESSION TESTS (Defense-in-Depth for Generic ADTs)
+//
+// These tests verify the caps-in-ADT ban covers generic ADT instantiation
+// with capability types. When the ban is eventually lifted (post-linear types),
+// the move checker's generic field resolution must correctly track affinity.
+// ============================================================================
+
+#[test]
+fn caps_in_direct_adt_field_banned() {
+    // Direct capability type in an ADT field is rejected at registration time.
+    // This is the existing enforcement mechanism.
+    let err = check_err(
+        r#"
+        enum Wrapper { Hold(FsCap) }
+    "#,
+    );
+    assert!(
+        err.contains("capability") || err.contains("FsCap"),
+        "Expected error about capability in ADT field, got: {err}"
+    );
+}
+
+#[test]
+fn generic_adt_with_cap_single_use_ok() {
+    // Generic ADTs instantiated with caps are NOT caught by the caps-in-ADT
+    // registration ban (ban checks field types at definition time where fields
+    // are type variables). However, Ty::kind() propagates affinity through ADT
+    // type args, so MyOption<FsCap> is Kind::Affine. This means:
+    // - Single use (constructing and returning) is fine
+    // - Duplication (let a = x; let b = x;) is caught by the move checker
+    check_ok(
+        r#"
+        enum MyOption<T> { Some(T), None }
+        fn wraps_cap(fs: FsCap) -> MyOption<FsCap> & {} {
+            MyOption::Some(fs)
+        }
+    "#,
+    );
+}
+
+#[test]
+fn generic_adt_cap_field_double_use_after_extract() {
+    // When a cap is extracted from a generic ADT via pattern match,
+    // the extracted binding must be affine. Double use is rejected.
+    let err = check_err(
+        r#"
+        enum Box<T> { Val(T) }
+        extern fn use_fs(fs: FsCap) -> () & {Fs};
+        fn bad(fs: FsCap) -> () & {Fs} {
+            let b = Box::Val(fs);
+            match b {
+                Box::Val(inner) => { use_fs(inner); use_fs(inner) },
+            }
+        }
+    "#,
+    );
+    assert!(
+        err.contains("already been used"),
+        "Expected double-use error on cap extracted from generic ADT, got: {err}"
+    );
+}
+
+// ============================================================================
 // ADT NAME SHADOWING TESTS
 // ============================================================================
 
