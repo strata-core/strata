@@ -1,6 +1,6 @@
 # Strata — Layered Safety by Design
 
-> **Status:** v0.0.10 — Affine Types (Linear Capabilities) complete
+> **Status:** v0.0.11 — Traced Runtime (Effect Tracing + Deterministic Replay) complete
 >
 > **License:** MIT
 >
@@ -177,7 +177,13 @@ fn ai_agent(
 - Capability transfer via `let x = cap;` (ownership moves, original consumed)
 - Use-after-move detection at type-check time
 - Pessimistic branch analysis (consumed in any branch = consumed afterward)
-- **435 comprehensive tests** (all passing)
+- **Traced runtime** — effect tracing and deterministic replay
+- `&CapType` borrow syntax in extern fn params (non-consuming access)
+- Host function dispatch with capability injection at `main()` entry
+- Streaming JSONL effect traces with SHA-256 hashing for large values
+- Deterministic replay: validate program behavior against recorded traces
+- CLI: `strata run`, `strata replay`, `strata parse` subcommands
+- **493 comprehensive tests** (all passing)
 
 ✅ **Security Hardening:**
 - DoS protection: source size (1MB), token count (200K), parser nesting (512), inference depth (512), eval call depth (1000), effect vars (4096)
@@ -187,7 +193,7 @@ fn ai_agent(
 - Parser depth guards balanced on all error paths
 
 📋 **Next Up:**
-- Issue 011: WASM runtime + effect traces + deterministic replay
+- Standard library functions, network host functions, error handling
 
 **Target v0.1:** November 2026 - February 2027
 
@@ -203,10 +209,19 @@ git clone https://github.com/strata-core/strata.git
 cd strata
 cargo build --workspace
 
-# Run an example
-cargo run -p strata-cli -- examples/add.strata
+# Run a program
+cargo run -p strata-cli -- run examples/deploy.strata
 
-# Run tests (435 tests)
+# Run with effect trace
+cargo run -p strata-cli -- run examples/deploy.strata --trace trace.jsonl
+
+# Replay a trace
+cargo run -p strata-cli -- replay trace.jsonl examples/deploy.strata
+
+# Parse and dump AST
+cargo run -p strata-cli -- parse examples/add.strata
+
+# Run tests (493 tests)
 cargo test --workspace
 ```
 
@@ -296,7 +311,7 @@ fn add(x: Int, y: Int) -> Int { x + y }
 # Build everything
 cargo build --workspace
 
-# Run all tests (435 tests)
+# Run all tests (493 tests)
 cargo test --workspace
 
 # Run clippy (enforced in CI)
@@ -304,6 +319,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 # Format code
 cargo fmt
+
+# Run a program
+cargo run -p strata-cli -- run examples/deploy.strata
+
+# Run with effect trace
+cargo run -p strata-cli -- run examples/deploy.strata --trace trace.jsonl
+
+# Replay a trace
+cargo run -p strata-cli -- replay trace.jsonl examples/deploy.strata
 ```
 
 ---
@@ -313,7 +337,8 @@ cargo fmt
 **Phase 1 (Complete):** Parser, AST, basic type checking ✅  
 **Phase 2 (Complete):** Functions ✅, hardening ✅, blocks ✅, ADTs ✅  
 **Phase 3 (Complete):** Effect system ✅, capabilities ✅, affine types ✅
-**Phase 4:** Runtime, stdlib, WASM compilation, replay  
+**Phase 3.5 (Complete):** Traced runtime ✅, deterministic replay ✅
+**Phase 4:** Stdlib, WASM compilation, network host functions
 **Phase 5:** Tooling, docs, killer demos, v0.1 launch  
 
 **v0.1 Target:** November 2026 - February 2027

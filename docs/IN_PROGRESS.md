@@ -13,7 +13,7 @@
 
 **What was built:**
 
-**5 phases, 25 new tests (477 total):**
+**5 phases + hardening, 41 new tests (493 total):**
 
 **Phase 1: Extern-Only Borrowing**
 - `&CapType` syntax in extern fn params — borrow without consuming
@@ -39,6 +39,11 @@
 - `strata run` / `strata replay` / `strata parse` subcommands
 - `--trace` (audit, hashed) and `--trace-full` (replay-capable) flags
 - Trace summary output, example program + documentation
+
+**Hardening (6 fixes, 16 new tests)**
+- Ty::Ref second-class enforcement, TraceValue tagged serialization
+- Trace write failures abort execution, TraceRecord schema versioning
+- Cap/Closure/Tuple rejection in deserialization, input hashing in audit mode
 
 **End-to-end workflow:**
 ```bash
@@ -87,7 +92,7 @@ strata replay trace.jsonl program.strata
 **Codebase:**
 - 4 crates (strata-ast, strata-parse, strata-types, strata-cli)
 - ~12,000+ lines of Rust code
-- 477 tests (all passing)
+- 493 tests (all passing)
 - 0 clippy warnings (enforced)
 
 **Velocity:**

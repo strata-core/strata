@@ -655,7 +655,7 @@ fn looped(fs: FsCap) -> () & {Fs} {
 ### Issue 011a: Traced Runtime (Complete)
 
 **Completed:** February 2026
-**Test Coverage:** 477 tests (25 new across 5 phases)
+**Test Coverage:** 493 tests (41 new across 5 phases + hardening)
 
 **What was implemented:**
 
@@ -721,7 +721,24 @@ strata replay trace.jsonl example.strata
 - `crates/strata-cli/src/eval.rs` — Evaluator with capability injection, trace threading, replay dispatch
 - `crates/strata-cli/src/main.rs` — CLI with run/replay/parse subcommands
 
-**Status:** Complete. End-to-end traced runtime with deterministic replay.
+**Hardening (post-Phase 5):**
+
+6 hardening fixes + 16 new tests:
+
+1. **Ty::Ref second-class enforcement** — `is_first_class()` on Ty, post-solving settle points in check_let/check_fn, pre-solve check in infer_stmt, RefInAdtField check BEFORE capability check in register_struct/register_enum
+2. **TraceValue tagged serialization** — `#[serde(tag = "t", content = "v")]` replaces lossy serialize/deserialize, BTreeMap for deterministic key order
+3. **Input hashing** — Audit mode (`--trace`) hashes large inputs AND outputs; replay requires `--trace-full`
+4. **Trace write failures abort execution** — `emit()` and `finalize()` return `Result<(), HostError>`, propagated through dispatch_traced and eval
+5. **TraceRecord envelope** — Header/Effect/Footer with schema version validation
+6. **Cap rejection in deserialization** — TraceValue enum only has data variants; Cap/Closure/Tuple tags rejected by serde
+
+**Security regression tests:**
+- Schema version validation (rejects unknown versions)
+- Footer completeness detection (truncated traces detected)
+- Tagged value type confusion (Str("42") vs Int(42) round-trip preserved)
+- Cap/Closure/Tuple rejection in trace deserialization
+
+**Status:** Complete. End-to-end traced runtime with deterministic replay. Hardened for security.
 
 ---
 
@@ -801,7 +818,7 @@ strata parse file.strata --format json
 # Build all crates
 cargo build --workspace
 
-# Run all tests (477 tests)
+# Run all tests (493 tests)
 cargo test --workspace
 
 # Run with clippy (enforced in CI)
@@ -839,7 +856,7 @@ strata-ast       (no deps)
 ## Project Stats
 
 - **Crates:** 4 (ast, parse, types, cli)
-- **Total Tests:** 477 (parser: 48, types: 174, cli: 26, host_integration: 21, cli_integration: 4, effects: 41, capabilities: 58, move_check: 38, others: 67)
+- **Total Tests:** 493 (parser: 48, types: 174, cli: 26, host_integration: 29, cli_integration: 4, effects: 41, capabilities: 66, move_check: 38, others: 67)
 - **Lines of Code:** ~12,000+ (estimate)
 - **Issues Completed:** 10 + hardening + 011a (Parser, Effects, Type Scaffolding, Basic Type Checking, Functions, Blocks, ADTs, Security Hardening, Effect System, Capability Types, Affine Types, Pre-011 Hardening, Traced Runtime)
 - **Example Files:** 30+
