@@ -133,6 +133,8 @@ pub mod ast {
         },
         /// Tuple type: `(A, B, C)`
         Tuple(Vec<TypeExpr>, Span),
+        /// Reference type: `&T` (only allowed in extern fn params for capability borrowing)
+        Ref(Box<TypeExpr>, Span),
     }
 
     impl TypeExpr {
@@ -143,6 +145,7 @@ pub mod ast {
                 TypeExpr::Arrow { span, .. } => *span,
                 TypeExpr::App { span, .. } => *span,
                 TypeExpr::Tuple(_, span) => *span,
+                TypeExpr::Ref(_, span) => *span,
             }
         }
     }
@@ -322,6 +325,8 @@ pub mod ast {
         /// Variant construction: `Option::Some(x)`
         /// (Handled as Call on a path, but explicit for clarity in some cases)
         PathExpr(Path),
+        /// Borrow expression: `&expr` (produces a reference type)
+        Borrow(Box<Expr>, Span),
     }
 
     /// Field initialization in struct expression: `x: expr` or `x` (shorthand)
@@ -349,6 +354,7 @@ pub mod ast {
                 Expr::Tuple { span, .. } => *span,
                 Expr::StructExpr { span, .. } => *span,
                 Expr::PathExpr(path) => path.span,
+                Expr::Borrow(_, span) => *span,
             }
         }
     }

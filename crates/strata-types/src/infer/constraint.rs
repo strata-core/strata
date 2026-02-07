@@ -442,6 +442,12 @@ impl InferCtx {
 
             // Path expression (enum constructor)
             Expr::PathExpr(path) => self.infer_path_expr(ctx, path),
+
+            // Borrow expression: &expr produces Ty::Ref(inner_ty)
+            Expr::Borrow(inner, _span) => {
+                let inner_ty = self.infer_expr_ctx(ctx, inner)?;
+                Ok(Ty::Ref(Box::new(inner_ty)))
+            }
         }
     }
 
@@ -1281,6 +1287,7 @@ fn substitute_type_vars(ty: &Ty, subst: &HashMap<TypeVarId, Ty>) -> Ty {
                 .map(|t| substitute_type_vars(t, subst))
                 .collect(),
         },
+        Ty::Ref(inner) => Ty::Ref(Box::new(substitute_type_vars(inner, subst))),
     }
 }
 
@@ -1332,6 +1339,11 @@ fn ty_from_type_expr(te: &strata_ast::ast::TypeExpr) -> Result<Ty, InferError> {
         // Tuple type annotations in block-level let bindings not yet supported.
         TypeExpr::Tuple(_, span) => Err(InferError::NotImplemented {
             msg: "Tuple types not yet implemented".to_string(),
+            span: *span,
+        }),
+        // Reference types are only allowed in extern function parameters
+        TypeExpr::Ref(_, span) => Err(InferError::NotImplemented {
+            msg: "Reference types (&T) are only allowed in extern function parameters".to_string(),
             span: *span,
         }),
     }

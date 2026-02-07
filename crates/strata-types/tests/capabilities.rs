@@ -870,3 +870,152 @@ fn hardening_exploit_4_mutual_recursion_scc_introduces_effect() {
         "CRITICAL: Mutual recursion SCC allowed {{Fs}} effect without matching annotation on pong, got: {err}"
     );
 }
+
+// ============================================================================
+// BORROW TESTS — &CapType for extern-only borrowing (Phase 1, Issue 011a)
+//
+// Borrowing allows extern functions to use a capability without consuming it.
+// The type system enforces this at compile time; runtime is unchanged.
+// ============================================================================
+
+// --- Positive tests ---
+
+#[test]
+fn extern_borrow_cap_single_use() {
+    // Extern fn borrows FsCap once — should type-check fine
+    check_ok(
+        r#"
+        extern fn read_file(fs: &FsCap, path: String) -> String & {Fs};
+        fn main(fs: FsCap) -> String & {Fs} {
+            read_file(&fs, "test.txt")
+        }
+    "#,
+    );
+}
+
+#[test]
+fn extern_borrow_cap_multiple_use() {
+    // Borrow the same cap multiple times — borrow doesn't consume
+    check_ok(
+        r#"
+        extern fn read_file(fs: &FsCap, path: String) -> String & {Fs};
+        fn main(fs: FsCap) -> String & {Fs} {
+            let a = read_file(&fs, "a.txt");
+            let b = read_file(&fs, "b.txt");
+            let c = read_file(&fs, "c.txt");
+            c
+        }
+    "#,
+    );
+}
+
+#[test]
+fn extern_borrow_then_strata_consume() {
+    // Borrow in extern calls, then pass to a consuming Strata fn
+    check_ok(
+        r#"
+        extern fn read_file(fs: &FsCap, path: String) -> String & {Fs};
+        fn consume_fs(fs: FsCap) -> () & {Fs} { () }
+        fn main(fs: FsCap) -> () & {Fs} {
+            let data = read_file(&fs, "a.txt");
+            consume_fs(fs)
+        }
+    "#,
+    );
+}
+
+#[test]
+fn borrow_multiple_caps() {
+    // Borrow both FsCap and NetCap — both survive
+    check_ok(
+        r#"
+        extern fn read_file(fs: &FsCap, path: String) -> String & {Fs};
+        extern fn http_get(net: &NetCap, url: String) -> String & {Net};
+        fn main(fs: FsCap, net: NetCap) -> String & {Fs, Net} {
+            let a = read_file(&fs, "file.txt");
+            let b = http_get(&net, "http://example.com");
+            b
+        }
+    "#,
+    );
+}
+
+// --- Negative tests ---
+
+#[test]
+fn borrow_after_consume_error() {
+    // Consume cap, then try to borrow — should fail
+    let err = check_err(
+        r#"
+        extern fn read_file(fs: &FsCap, path: String) -> String & {Fs};
+        fn consume_fs(fs: FsCap) -> () & {Fs} { () }
+        fn main(fs: FsCap) -> String & {Fs} {
+            consume_fs(fs);
+            read_file(&fs, "a.txt")
+        }
+    "#,
+    );
+    assert!(
+        err.contains("already been used") || err.contains("already used"),
+        "Expected double-use error, got: {err}"
+    );
+}
+
+#[test]
+fn ref_type_in_strata_fn_error() {
+    // &T in regular fn params is rejected
+    let err = check_err(
+        r#"
+        fn bad(fs: &FsCap) -> () & {Fs} { () }
+    "#,
+    );
+    assert!(
+        err.contains("Reference types") || err.contains("only allowed in extern"),
+        "Expected ref-in-fn error, got: {err}"
+    );
+}
+
+#[test]
+fn ref_type_in_return_error() {
+    // &T in return types is rejected
+    let err = check_err(
+        r#"
+        extern fn bad(fs: FsCap) -> &FsCap & {Fs};
+    "#,
+    );
+    assert!(
+        err.contains("not allowed in return") || err.contains("Reference types"),
+        "Expected ref-in-return error, got: {err}"
+    );
+}
+
+#[test]
+fn ref_type_in_let_error() {
+    // &T in let binding type annotation is rejected
+    let err = check_err(
+        r#"
+        fn bad(fs: FsCap) -> () & {Fs} {
+            let x: &FsCap = fs;
+            ()
+        }
+    "#,
+    );
+    assert!(
+        err.contains("Reference types") || err.contains("only allowed in extern"),
+        "Expected ref-in-let error, got: {err}"
+    );
+}
+
+#[test]
+fn borrow_non_cap_error() {
+    // &Int in extern params is rejected (only cap types can be borrowed)
+    let err = check_err(
+        r#"
+        extern fn bad(x: &Int) -> Int & {};
+    "#,
+    );
+    assert!(
+        err.contains("only allowed on capability types") || err.contains("Reference types"),
+        "Expected ref-non-cap error, got: {err}"
+    );
+}

@@ -183,6 +183,7 @@ impl Subst {
                     args.iter().map(|a| self.apply(a)).collect();
                 Ok(Ty::adt(name.clone(), new_args?))
             }
+            Ty::Ref(inner) => Ok(Ty::Ref(Box::new(self.apply(inner)?))),
         }
     }
 

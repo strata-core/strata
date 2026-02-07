@@ -355,6 +355,10 @@ pub fn eval_expr(env: &mut Env, expr: &Expr) -> Result<ControlFlow> {
 
         // Path expression (enum constructor)
         Expr::PathExpr(path) => eval_path_expr(env, path),
+
+        // Borrow expression: at runtime, borrow is a no-op (pass-through).
+        // The type system enforces borrowing semantics; runtime uses value semantics.
+        Expr::Borrow(inner, _) => eval_expr(env, inner),
     }
 }
 

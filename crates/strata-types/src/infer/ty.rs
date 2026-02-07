@@ -75,6 +75,9 @@ pub enum Ty {
     /// Never unifies with any type (as a subtype of all types).
     /// This prevents "unreachable code" unification failures.
     Never,
+    /// Reference (borrow) type: `&T`. Only used in extern fn params for
+    /// capability borrowing. Refs are unrestricted (can be used multiple times).
+    Ref(Box<Ty>),
 }
 
 impl Ty {
@@ -199,6 +202,8 @@ impl Ty {
                 }
             }
             Ty::List(inner) => inner.kind(),
+            // Refs are always unrestricted — borrowing doesn't consume
+            Ty::Ref(_) => Kind::Unrestricted,
             _ => Kind::Unrestricted,
         }
     }
@@ -263,6 +268,7 @@ impl fmt::Display for Ty {
             }
             Ty::Cap(kind) => write!(f, "{}", kind.type_name()),
             Ty::Never => write!(f, "!"),
+            Ty::Ref(inner) => write!(f, "&{}", inner),
         }
     }
 }
@@ -379,6 +385,7 @@ pub fn free_vars(ty: &Ty) -> HashSet<TypeVarId> {
             }
             set
         }
+        Ty::Ref(inner) => free_vars(inner),
     }
 }
 
@@ -412,6 +419,7 @@ pub fn free_effect_vars(ty: &Ty) -> HashSet<EffectVarId> {
             }
             set
         }
+        Ty::Ref(inner) => free_effect_vars(inner),
     }
 }
 

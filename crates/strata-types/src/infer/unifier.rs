@@ -174,6 +174,8 @@ impl Unifier {
                 Ok(())
             }
 
+            (Ty::Ref(a), Ty::Ref(b)) => self.unify(&a, &b),
+
             (x, y) => Err(TypeError::Mismatch(x, y)),
         }
     }
@@ -300,5 +302,6 @@ fn occurs_in(v: TypeVarId, ty: &Ty, subst: &Subst) -> bool {
         Ty::Tuple(ref xs) => xs.iter().any(|x| occurs_in(v, x, subst)),
         Ty::List(ref x) => occurs_in(v, x, subst),
         Ty::Adt { ref args, .. } => args.iter().any(|a| occurs_in(v, a, subst)),
+        Ty::Ref(ref inner) => occurs_in(v, inner, subst),
     }
 }

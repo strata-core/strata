@@ -564,6 +564,10 @@ impl TypeChecker {
                             .iter()
                             .filter_map(|ty| match ty {
                                 Ty::Cap(kind) => Some(*kind),
+                                Ty::Ref(inner) => match inner.as_ref() {
+                                    Ty::Cap(kind) => Some(*kind),
+                                    _ => None,
+                                },
                                 _ => None,
                             })
                             .collect();
@@ -762,6 +766,10 @@ impl TypeChecker {
                 .iter()
                 .filter_map(|ty| match ty {
                     Ty::Cap(kind) => Some(*kind),
+                    Ty::Ref(inner) => match inner.as_ref() {
+                        Ty::Cap(kind) => Some(*kind),
+                        _ => None,
+                    },
                     _ => None,
                 })
                 .collect();
@@ -839,12 +847,31 @@ impl TypeChecker {
             param_tys.push(param_ty);
         }
 
+        // Reject &T in regular fn params
+        for (param, param_ty) in decl.params.iter().zip(param_tys.iter()) {
+            if matches!(param_ty, Ty::Ref(_)) {
+                return Err(TypeError::NotImplemented {
+                    msg: "Reference types (&T) are only allowed in extern function parameters"
+                        .to_string(),
+                    span: param.span,
+                });
+            }
+        }
+
         // Extract return type
         let ret_ty = if let Some(ref ty_expr) = decl.ret_ty {
             self.ty_from_type_expr(ty_expr)?
         } else {
             self.infer_ctx.fresh_var()
         };
+
+        // Reject &T in return type
+        if contains_ref(&ret_ty) {
+            return Err(TypeError::NotImplemented {
+                msg: "Reference types (&T) are not allowed in return types".to_string(),
+                span: decl.ret_ty.as_ref().map(|t| t.span()).unwrap_or(decl.span),
+            });
+        }
 
         // Convert effect annotation to EffectRow
         let eff = if let Some(ref effects) = decl.effects {
@@ -879,6 +906,26 @@ impl TypeChecker {
         } else {
             self.infer_ctx.fresh_var()
         };
+
+        // Reject &T in return type
+        if contains_ref(&ret_ty) {
+            return Err(TypeError::NotImplemented {
+                msg: "Reference types (&T) are not allowed in return types".to_string(),
+                span: decl.ret_ty.as_ref().map(|t| t.span()).unwrap_or(decl.span),
+            });
+        }
+
+        // Validate: &T in extern params must only wrap capability types
+        for (param, param_ty) in decl.params.iter().zip(param_tys.iter()) {
+            if let Ty::Ref(inner) = param_ty {
+                if !matches!(inner.as_ref(), Ty::Cap(_)) {
+                    return Err(TypeError::NotImplemented {
+                        msg: "Reference types (&T) are only allowed on capability types in extern function parameters".to_string(),
+                        span: param.span,
+                    });
+                }
+            }
+        }
 
         // Convert effect annotation (required for extern fns)
         let eff = if let Some(ref effects) = decl.effects {
@@ -1152,6 +1199,7 @@ fn remap_type_vars(ty: &Ty, remap: &std::collections::HashMap<TypeVarId, Ty>) ->
             name: name.clone(),
             args: args.iter().map(|t| remap_type_vars(t, remap)).collect(),
         },
+        Ty::Ref(inner) => Ty::Ref(Box::new(remap_type_vars(inner, remap))),
     }
 }
 
@@ -1286,6 +1334,10 @@ impl TypeChecker {
                     .collect();
 
                 Ok(Ty::tuple(elem_tys?))
+            }
+            TypeExpr::Ref(inner, _span) => {
+                let inner_ty = self.ty_from_type_expr_with_params(inner, type_params)?;
+                Ok(Ty::Ref(Box::new(inner_ty)))
             }
         }
     }
@@ -1484,6 +1536,18 @@ fn validate_caps_against_effects(
         }
     }
     Ok(())
+}
+
+/// Check if a type contains any Ty::Ref (reference) anywhere in its structure.
+fn contains_ref(ty: &Ty) -> bool {
+    match ty {
+        Ty::Ref(_) => true,
+        Ty::Const(_) | Ty::Var(_) | Ty::Never | Ty::Cap(_) => false,
+        Ty::Arrow(params, ret, _) => params.iter().any(contains_ref) || contains_ref(ret),
+        Ty::Tuple(tys) => tys.iter().any(contains_ref),
+        Ty::List(inner) => contains_ref(inner),
+        Ty::Adt { args, .. } => args.iter().any(contains_ref),
+    }
 }
 
 /// Convert a SubstError to a checker TypeError with a span
